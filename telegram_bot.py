@@ -52,6 +52,7 @@ ADMIN_IDS = {int(x) for x in _admin_ids_raw.replace(" ", "").split(",") if x.isd
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 PAGE_SIZE = 6
 BOT_NAME = "Matix"
+V2BOX_URL = "https://play.google.com/store/apps/details?id=dev.hexasoftware.v2box"
 
 # ── فروشگاه: قیمت‌گذاری، سفارش‌ها، مصرف‌کنندگان تست رایگان ────────────────────
 SHOP_FILE = DATA_DIR / "aurora_shop.json"
@@ -72,6 +73,7 @@ SHOP: dict = {
     "wallets": {},               # str(chat_id) -> موجودی کیف پول (تومان)
     "wallet_topups": {},         # topup_id(str) -> {"chat_id","amount","status","created_at","receipt_message_id"}
     "wallet_topup_seq": 0,
+    "wallet_topup_presets": [50000, 100000, 200000, 500000],  # مبالغ پیشنهادی شارژ کیف پول (تومان) — از پنل ادمین قابل تغییره
     "referrals": {},              # str(referred_chat_id) -> referrer_chat_id
     "referral_bonus": 10000,      # پاداش معرفی (تومان) به معرف، بعد از اولین خرید موفق زیرمجموعه
     "known_users": [],            # لیست همه‌ی chat_id هایی که تا حالا با ربات تعامل داشته‌اند
@@ -268,6 +270,7 @@ T = {
     "cust_home_title": {"fa": "💠 M A T I X", "en": "💠 M A T I X"},
     "cust_home_sub": {
         "fa": (
+            "به نام خدا 🕊️\n\n"
             "به <b>Matix</b> خوش اومدی ✨\n"
             "اینترنتِ آزاد، پرسرعت و پایدار — بدون قطعی، بدون دردسر 🚀\n\n"
             "🔹 هر حجم و هر مدتی که بخوای، با چند لمس بساز\n"
@@ -352,7 +355,12 @@ T = {
                "🎁 <b>تست رایگان</b>: یک‌بار برای هر کاربر، بدون نیاز به پرداخت یا تایید.\n\n"
                "📦 <b>کانفیگ‌های من</b>: همه‌ی کانفیگ‌هایی که خریدی یا تست گرفتی، یک‌جا.\n\n"
                "📊 <b>اعلام حجم سریع</b>: کافیه لینک vless یا لینک ساب کانفیگت رو همین‌جا برام بفرستی، "
-               "بلافاصله میزان مصرف و باقی‌مانده‌ی حجمشو برات می‌گم."),
+               "بلافاصله میزان مصرف و باقی‌مانده‌ی حجمشو برات می‌گم.\n\n"
+               "📱 <b>چجوری کانفیگ رو وارد کنم؟</b>\n"
+               "۱. اول اپلیکیشن <b>v2Box</b> رو با دکمه‌ی زیر نصب کن.\n"
+               "۲. کانفیگت رو از «کانفیگ‌های من» باز کن و لینکش رو کپی کن.\n"
+               "۳. توی v2Box، روی «+» بالای صفحه بزن و «Import from Clipboard» رو انتخاب کن.\n"
+               "۴. کانفیگ به لیستت اضافه می‌شه؛ روش بزن تا وصل بشه، بعد کلید اتصال (پایین صفحه) رو روشن کن. 🚀"),
         "en": ("❔ <b>Matix Help</b>\n\n"
                "🛒 <b>Buy a Config</b>: enter your desired volume and duration, the price is "
                "calculated, pay and send the receipt. Once an admin approves, your config is delivered automatically.\n\n"
@@ -609,9 +617,6 @@ def _home_view(chat_id: int):
              {"text": _t(chat_id, "btn_referral"), "callback_data": "ref:home"}],
             [{"text": _t(chat_id, "btn_help"), "callback_data": "help"}],
         ]
-        share_url = _share_url()
-        if share_url:
-            rows.append([{"text": _t(chat_id, "btn_share"), "url": share_url}])
         rows.append([{"text": _t(chat_id, "btn_lang"), "callback_data": "lang:toggle"}])
         kb = {"inline_keyboard": rows}
     return title, sub, kb
@@ -662,6 +667,7 @@ def _mine_list_kb(chat_id: int, page: int):
 
 def _link_detail_kb(chat_id: int, uid: str, active: bool):
     rows = [[{"text": _t(chat_id, "btn_show_link"), "callback_data": f"link:{uid}"}]]
+    rows.append([{"text": "📲 دانلود v2Box", "url": V2BOX_URL}])
     rows.append([{"text": _t(chat_id, "btn_renew"), "callback_data": f"renew:start:{uid}"}])
     if _is_admin(chat_id):
         rows.append([{"text": (_t(chat_id, "btn_disable") if active else _t(chat_id, "btn_enable")), "callback_data": f"toggle:{uid}"}])
@@ -842,11 +848,17 @@ def _buy_summary_text(data: dict) -> str:
     lines.append("\nبرای ادامه، تایید کن تا اطلاعات پرداخت رو ببینی.")
     return "\n".join(lines)
 
+def _buyer_line(chat_id: int, username: str | None) -> str:
+    """یک خط شناسایی مشتری با نام/یوزرنیم، آیدی عددی، و لینک مستقیم به پروفایلش برای ادمین."""
+    looks_like_username = bool(username) and " " not in username and username.replace("_", "").isalnum()
+    display = f"@{username}" if looks_like_username else (username or str(chat_id))
+    return f"👤 {display} — <code>{chat_id}</code> — <a href=\"tg://user?id={chat_id}\">مشاهده پروفایل</a>"
+
 def _order_summary(order: dict) -> str:
     code_line = f"کد تخفیف: {order.get('discount_code')}\n" if order.get("discount_code") else ""
     return (
         f"🧾 سفارش #{order['id']}\n"
-        f"مشتری: {order.get('username') or order['chat_id']} (<code>{order['chat_id']}</code>)\n"
+        f"مشتری: {_buyer_line(order['chat_id'], order.get('username'))}\n"
         f"حجم: {order['volume_gb']} GB\n"
         f"مدت: {order['days']} روز\n"
         f"{code_line}"
@@ -903,6 +915,7 @@ def _settings_kb(chat_id: int):
         [{"text": f"🔒 کانال اجباری: {SHOP.get('required_channel') or '—'}", "callback_data": "set:required_channel"},
          {"text": f"🔗 لینک عضویت", "callback_data": "set:required_channel_url"}],
         [{"text": f"🤝 پاداش رفرال: {SHOP.get('referral_bonus', 0):,}ت", "callback_data": "set:referral_bonus"}],
+        [{"text": f"💰 مبالغ پیشنهادی شارژ کیف پول: {', '.join(f'{int(a):,}' for a in SHOP.get('wallet_topup_presets', []))}", "callback_data": "set:wallet_topup_presets"}],
         [{"text": _t(chat_id, "btn_admin_discounts"), "callback_data": "discounts:0"}],
         [{"text": _t(chat_id, "btn_back_home"), "callback_data": "home"}],
     ]}
@@ -997,8 +1010,13 @@ async def _handle_message(msg: dict):
         if payload.startswith("ref_"):
             ref_id_txt = payload[4:]
             if ref_id_txt.lstrip("-").isdigit():
-                _register_referral(chat_id, int(ref_id_txt))
+                ref_id = int(ref_id_txt)
+                is_new_referral = str(chat_id) not in SHOP.get("referrals", {}) and ref_id != chat_id
+                _register_referral(chat_id, ref_id)
                 await _save_shop()
+                if is_new_referral:
+                    who = f"@{username}" if username else str(chat_id)
+                    await _send(ref_id, f"👥 یکی از دوستات ({who}) با لینک دعوت تو وارد Matix شد!\nبعد از اولین خریدش، پاداش رفرال به کیف پولت اضافه می‌شه 🎁")
             payload = ""
         if not await _passes_membership_gate(chat_id):
             await _send(chat_id, "🔒 برای استفاده از ربات، اول باید عضو کانال ما بشی:", _join_gate_kb(chat_id))
@@ -1238,7 +1256,7 @@ async def _handle_message(msg: dict):
                 ]]}
                 for aid in ADMIN_IDS:
                     await _forward(aid, chat_id, msg.get("message_id"))
-                    await _send(aid, f"💰 درخواست شارژ کیف پول از {username or chat_id} (<code>{chat_id}</code>)\nمبلغ: {wdata['amount']:,} تومان", kb)
+                    await _send(aid, f"💰 درخواست شارژ کیف پول از:\n{_buyer_line(chat_id, username)}\nمبلغ: {wdata['amount']:,} تومان", kb)
                 await _send(chat_id, "✅ رسیدت دریافت شد؛ به محض تایید، کیف پولت شارژ می‌شه 🚀")
                 return
             await _send(chat_id, "📎 لطفاً عکس رسید یا کد پیگیری واریز رو بفرست:", wallet_cancel_kb)
@@ -1427,6 +1445,19 @@ async def _handle_message(msg: dict):
                 await _send(chat_id, "❗️ یه عدد صحیح (تومان) بفرست:")
                 return
             SHOP[field] = n
+        elif field == "wallet_topup_presets":
+            parts = [p.strip() for p in re.split(r"[,\n]+", text) if p.strip()]
+            amounts = []
+            for p in parts:
+                n = _parse_nonneg_int(p)
+                if n is None or n <= 0:
+                    await _send(chat_id, "❗️ فقط عدد بفرست، با کاما جدا کن. مثال: <code>50000,100000,200000,500000</code>")
+                    return
+                amounts.append(n)
+            if not amounts:
+                await _send(chat_id, "❗️ حداقل یک مبلغ بفرست.")
+                return
+            SHOP[field] = amounts
         await _save_shop()
         _pending.pop(chat_id, None)
         await _send(chat_id, "✅ ذخیره شد.", _settings_kb(chat_id))
@@ -1488,7 +1519,11 @@ async def _handle_callback(cb: dict):
         return
 
     if data == "help":
-        await _edit(chat_id, message_id, _t(chat_id, "help_text"), {"inline_keyboard": [[{"text": _t(chat_id, "btn_back_home"), "callback_data": "home"}]]})
+        v2box_kb = {"inline_keyboard": [
+            [{"text": "📲 دانلود اپلیکیشن v2Box", "url": V2BOX_URL}],
+            [{"text": _t(chat_id, "btn_back_home"), "callback_data": "home"}],
+        ]}
+        await _edit(chat_id, message_id, _t(chat_id, "help_text"), v2box_kb)
         return
 
     # ── استعلام حجم کانفیگ (دکمه‌ی جدا) ─────────────────────────────────────
@@ -1686,8 +1721,40 @@ async def _handle_callback(cb: dict):
 
     if data == "wallet:topup:start":
         _pending[chat_id] = {"action": "wallet_topup", "step": "amount", "data": {}}
+        presets = SHOP.get("wallet_topup_presets") or []
+        rows = []
+        row = []
+        for amt in presets:
+            row.append({"text": f"{int(amt):,} ت", "callback_data": f"wallet:topup:preset:{int(amt)}"})
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([{"text": _t(chat_id, "btn_cancel"), "callback_data": "wallet:cancel"}])
+        kb = {"inline_keyboard": rows}
+        await _edit(chat_id, message_id, "➕ چه مبلغی (تومان) می‌خوای شارژ کنی؟\nیکی از مبالغ زیر رو انتخاب کن، یا خودت یه عدد دلخواه بفرست:", kb)
+        return
+
+    if data.startswith("wallet:topup:preset:"):
+        pending = _pending.get(chat_id)
+        if not pending or pending.get("action") != "wallet_topup":
+            await _answer_cb(cb_id, _t(chat_id, "step_invalid"), alert=True)
+            return
+        try:
+            amount = int(data.split(":", 3)[3])
+        except (ValueError, IndexError):
+            await _answer_cb(cb_id, _t(chat_id, "invalid_btn"))
+            return
+        pending["data"]["amount"] = amount
+        card = SHOP.get("card_number") or "—"
+        owner = SHOP.get("card_owner") or "—"
         kb = {"inline_keyboard": [[{"text": _t(chat_id, "btn_cancel"), "callback_data": "wallet:cancel"}]]}
-        await _edit(chat_id, message_id, "➕ چه مبلغی (تومان) می‌خوای شارژ کنی؟ فقط عدد رو بفرست:", kb)
+        await _edit(chat_id, message_id,
+            f"💳 مبلغ <b>{amount:,} تومان</b> رو به شماره کارت زیر واریز کن:\n\n<code>{card}</code>\nبه نام: {owner}\n\n"
+            f"بعد از واریز، عکس رسید یا کد پیگیری رو همینجا بفرست 📎",
+            kb)
+        pending["step"] = "receipt"
         return
 
     if data == "wallet:cancel":
@@ -2005,6 +2072,10 @@ async def _handle_callback(cb: dict):
             ),
             "required_channel_url": "🔗 لینک عضویت در کانال اجباری رو بفرست (مثلاً https://t.me/mychannel):",
             "referral_bonus": "🤝 مبلغ پاداش رفرال (تومان) که بعد از اولین خرید هر زیرمجموعه به معرفش داده می‌شه رو بفرست:",
+            "wallet_topup_presets": (
+                "💰 مبالغ پیشنهادی شارژ کیف پول (تومان) رو با کاما جدا کن و بفرست.\n"
+                "مثال: <code>50000,100000,200000,500000</code>"
+            ),
         }
         await _edit(chat_id, message_id, prompts.get(field, "مقدار جدید رو بفرست:"))
         return

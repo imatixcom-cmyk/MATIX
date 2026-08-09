@@ -241,7 +241,18 @@ def get_host(request: Request | None = None) -> str:
             h = h.split(":")[0]
             CONFIG["host"] = h  # کش آخرین دامنه‌ی واقعی دیده‌شده، برای جاهایی که request نداریم (مثل ربات تلگرام)
             return h
-    return os.environ.get("RAILWAY_PUBLIC_DOMAIN", CONFIG["host"])
+    # برای جاهایی که request نداریم (مثل ربات تلگرام)، همیشه دوباره از env می‌خونیم
+    # و دامنه‌ی Railway/دامنه‌ای که خودت دستی ست می‌کنی رو اولویت می‌دیم، نه CONFIG["host"]
+    # که ممکنه از یک درخواست قدیمی با دامنه‌ی دیگه (مثلاً دامنه‌ی سفارشی قبلی) کش شده باشه.
+    # اگه دامنه‌ی دلخواهت رو در Railway → Variables با نام PUBLIC_DOMAIN ست کنی، همیشه همون
+    # استفاده می‌شه، مستقل از هر دامنه‌ی قدیمی دیگه.
+    manual_domain = os.environ.get("PUBLIC_DOMAIN", "").strip()
+    if manual_domain:
+        return manual_domain.replace("https://", "").replace("http://", "").split("/")[0]
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+        return railway_domain
+    return CONFIG["host"]
 
 def generate_uuid() -> str:
     h = secrets.token_hex(16)
