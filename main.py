@@ -80,6 +80,9 @@ async def load_state():
             SUBS.update(data.get("subs", {}))
             if "password_hash" in data:
                 AUTH["password_hash"] = data["password_hash"]
+            if "telegram" in data and isinstance(data["telegram"], dict):
+                TELEGRAM_SETTINGS["bot_token"] = data["telegram"].get("bot_token", "")
+                TELEGRAM_SETTINGS["admin_ids"] = data["telegram"].get("admin_ids", [])
             # لینک پیش‌فرضی که در نسخه‌های قبلی به‌صورت خودکار ساخته می‌شد دیگر
             # پشتیبانی نمی‌شود؛ اگر از قبل روی دیسک ذخیره شده باشد، حذفش می‌کنیم.
             legacy_default_uids = [uid for uid, l in LINKS.items() if l.get("is_default")]
@@ -99,6 +102,7 @@ async def save_state():
                 "links": dict(LINKS),
                 "subs": dict(SUBS),
                 "password_hash": AUTH["password_hash"],
+                "telegram": {"bot_token": TELEGRAM_SETTINGS.get("bot_token", ""), "admin_ids": TELEGRAM_SETTINGS.get("admin_ids", [])},
                 "saved_at": datetime.now().isoformat(),
             }
             tmp = DATA_FILE.with_suffix(".tmp")
@@ -204,6 +208,8 @@ async def startup():
         limits=limits, timeout=timeout, follow_redirects=True,
     )
     await load_state()
+    if TELEGRAM_SETTINGS.get("bot_token"):
+        _tg_configure(TELEGRAM_SETTINGS["bot_token"], TELEGRAM_SETTINGS.get("admin_ids", []))
     await _tg_start_bot()
     log_activity("system", "سرور راه‌اندازی شد", "ok")
     logger.info(f"X4G v9.8 started on port {CONFIG['port']}")
@@ -454,6 +460,42 @@ async def api_change_password(request: Request, token=Depends(require_auth)):
         SESSIONS.clear()
         SESSIONS[token] = time.time() + SESSION_TTL
     await save_state()
+
+# ── Telegram Bot Settings ─────────────────────────────────────────────────────
+@app.get("/api/settings/telegram")
+async def get_telegram_settings_api(_=Depends(require_auth)):
+    status = await _tg_get_status()
+    live = _tg_get_config()
+    token = TELEGRAM_SETTINGS.get("bot_token") or live.get("bot_token", "")
+    admin_ids = TELEGRAM_SETTINGS.get("admin_ids") or live.get("admin_ids", [])
+    return {
+        "bot_token": token,
+        "admin_id": ",".join(str(a) for a in admin_ids),
+        "connected": status.get("connected", False),
+        "bot_username": status.get("username"),
+    }
+
+@app.post("/api/settings/telegram")
+async def save_telegram_settings_api(request: Request, _=Depends(require_auth)):
+    body = await request.json()
+    token = str(body.get("bot_token", "")).strip()
+    admin_raw = str(body.get("admin_id", "")).strip()
+    if not token or not admin_raw:
+        raise HTTPException(status_code=400, detail="توکن ربات و آیدی ادمین الزامی است")
+    admin_ids = [int(x) for x in admin_raw.replace(" ", "").split(",") if x.isdigit()]
+    if not admin_ids:
+        raise HTTPException(status_code=400, detail="آیدی ادمین باید عدد باشد")
+
+    ok, err = await _tg_restart_bot(token, admin_ids)
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "اتصال به ربات ناموفق بود؛ توکن را بررسی کنید")
+
+    TELEGRAM_SETTINGS["bot_token"] = token
+    TELEGRAM_SETTINGS["admin_ids"] = admin_ids
+    await save_state()
+    log_activity("telegram", "تنظیمات ربات تلگرام ذخیره شد", "ok")
+    status = await _tg_get_status()
+    return {"ok": True, "connected": status.get("connected", False), "bot_username": status.get("username")}
     log_activity("auth", "رمز عبور پنل تغییر کرد", "ok")
     return {"ok": True}
 
@@ -784,7 +826,16 @@ app.include_router(xhttp_router)
 # ══════════════════════════════════════════════════════════════════════════════
 # ربات مدیریت تلگرام (اختیاری — فقط اگه TELEGRAM_BOT_TOKEN ست شده باشه فعال می‌شه)
 # ══════════════════════════════════════════════════════════════════════════════
-from telegram_bot import start_bot as _tg_start_bot, stop_bot as _tg_stop_bot
+from telegram_bot import (
+    start_bot as _tg_start_bot,
+    stop_bot as _tg_stop_bot,
+    configure as _tg_configure,
+    restart_bot as _tg_restart_bot,
+    get_status as _tg_get_status,
+    get_current_config as _tg_get_config,
+)
+
+TELEGRAM_SETTINGS: dict = {"bot_token": "", "admin_ids": []}
 
 # ── HTTP Proxy ────────────────────────────────────────────────────────────────
 _HOP = {"connection","keep-alive","proxy-authenticate","proxy-authorization",
