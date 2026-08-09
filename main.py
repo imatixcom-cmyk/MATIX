@@ -19,11 +19,11 @@ import httpx
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("X4G")
+logger = logging.getLogger("Matix")
 
 IRAN_TZ = ZoneInfo("Asia/Tehran")
 
-app = FastAPI(title="X4G", docs_url=None, redoc_url=None)
+app = FastAPI(title="Matix", docs_url=None, redoc_url=None)
 
 # ── Persistence ───────────────────────────────────────────────────────────────
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -78,9 +78,12 @@ async def load_state():
             data = json.loads(raw)
             LINKS.update(data.get("links", {}))
             SUBS.update(data.get("subs", {}))
-            if "password_hash" in data:
+            if "password_hash" in data and not os.environ.get("ADMIN_PASSWORD"):
+                # اگه ADMIN_PASSWORD روی Railway ست شده باشه، همیشه همون اولویت داره
+                # و پسورد ذخیره‌شده‌ی قبلی (که از داخل پنل عوض شده بود) نادیده گرفته می‌شه.
+                # این باعث می‌شه دیگه با هر ری‌استارت گیج نشی که کدوم پسورد فعاله.
                 AUTH["password_hash"] = data["password_hash"]
-            if "telegram" in data and isinstance(data["telegram"], dict):
+            if "telegram" in data:
                 TELEGRAM_SETTINGS["bot_token"] = data["telegram"].get("bot_token", "")
                 TELEGRAM_SETTINGS["admin_ids"] = data["telegram"].get("admin_ids", [])
             # لینک پیش‌فرضی که در نسخه‌های قبلی به‌صورت خودکار ساخته می‌شد دیگر
@@ -102,7 +105,7 @@ async def save_state():
                 "links": dict(LINKS),
                 "subs": dict(SUBS),
                 "password_hash": AUTH["password_hash"],
-                "telegram": {"bot_token": TELEGRAM_SETTINGS.get("bot_token", ""), "admin_ids": TELEGRAM_SETTINGS.get("admin_ids", [])},
+                "telegram": dict(TELEGRAM_SETTINGS),
                 "saved_at": datetime.now().isoformat(),
             }
             tmp = DATA_FILE.with_suffix(".tmp")
@@ -128,6 +131,9 @@ LINKS: dict = {}
 LINKS_LOCK = asyncio.Lock()
 SUBS: dict = {}
 SUBS_LOCK = asyncio.Lock()
+# تنظیمات ربات تلگرام که از پنل وب ذخیره می‌شن (اگه ست بشن، اولویت‌شون از
+# متغیرهای محیطی TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_IDS بیشتره)
+TELEGRAM_SETTINGS: dict = {"bot_token": "", "admin_ids": []}
 
 # پروتکل‌های پشتیبانی‌شده برای هر کانفیگ
 PROTOCOLS = ("vless-ws", "xhttp")
@@ -164,7 +170,7 @@ SESSION_TTL = 60 * 60 * 24 * 365
 def hash_password(pw: str) -> str:
     return hashlib.sha256(f"{pw}{CONFIG['secret']}".encode()).hexdigest()
 
-AUTH = {"password_hash": hash_password(os.environ.get("ADMIN_PASSWORD", "X4GKING"))}
+AUTH = {"password_hash": hash_password(os.environ.get("ADMIN_PASSWORD", "MatixAdmin"))}
 SESSIONS: dict = {}
 SESSIONS_LOCK = asyncio.Lock()
 
@@ -209,10 +215,12 @@ async def startup():
     )
     await load_state()
     if TELEGRAM_SETTINGS.get("bot_token"):
+        # تنظیمات ذخیره‌شده از پنل وب رو قبل از روشن کردن ربات اعمال کن
+        # (اولویت‌شون از env vars بیشتره)
         _tg_configure(TELEGRAM_SETTINGS["bot_token"], TELEGRAM_SETTINGS.get("admin_ids", []))
     await _tg_start_bot()
     log_activity("system", "سرور راه‌اندازی شد", "ok")
-    logger.info(f"X4G v9.8 started on port {CONFIG['port']}")
+    logger.info(f"Matix v1.0 started on port {CONFIG['port']}")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -245,7 +253,7 @@ def now_ir() -> datetime:
 def generate_vless_link(
     uuid: str,
     host: str,
-    remark: str = "X4G",
+    remark: str = "Matix",
     protocol: str = DEFAULT_PROTOCOL,
     fingerprint: str | None = None,
     alpn: str | None = None,
@@ -296,7 +304,7 @@ def vless_link_for_link(link: dict, uid: str, host: str) -> str:
     proto = link.get("protocol", DEFAULT_PROTOCOL)
     return generate_vless_link(
         uid, host,
-        remark=f"X4G-{link.get('label','')}",
+        remark=f"Matix-{link.get('label','')}",
         protocol=proto,
         fingerprint=link.get("fingerprint"),
         alpn=link.get("alpn"),
@@ -389,7 +397,7 @@ def client_ip(request: Request) -> str:
 # ── Basic endpoints ───────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"service": "X4G", "version": "9.5", "status": "active", "channel": "https://t.me/X4GHUB"}
+    return {"service": "Matix", "version": "1.0", "status": "active"}
 
 @app.get("/health")
 async def health():
@@ -407,7 +415,7 @@ async def subscription_single(uuid: str, request: Request):
     vless = vless_link_for_link(link, uuid, host)
     content = base64.b64encode(vless.encode()).decode()
     return Response(content=content, media_type="text/plain",
-                    headers={"profile-title": quote(link["label"]), "support-url": "https://t.me/X4GHUB"})
+                    headers={"profile-title": quote(link["label"])})
 
 @app.get("/sub-all")
 async def subscription_all(request: Request, _=Depends(require_auth)):
@@ -460,12 +468,15 @@ async def api_change_password(request: Request, token=Depends(require_auth)):
         SESSIONS.clear()
         SESSIONS[token] = time.time() + SESSION_TTL
     await save_state()
+    log_activity("auth", "رمز عبور پنل تغییر کرد", "ok")
+    return {"ok": True}
 
 # ── Telegram Bot Settings ─────────────────────────────────────────────────────
 @app.get("/api/settings/telegram")
 async def get_telegram_settings_api(_=Depends(require_auth)):
     status = await _tg_get_status()
     live = _tg_get_config()
+    # اگه از پنل چیزی ذخیره نشده باشه، مقدار فعلی (که ممکنه از env vars اومده باشه) رو نشون بده
     token = TELEGRAM_SETTINGS.get("bot_token") or live.get("bot_token", "")
     admin_ids = TELEGRAM_SETTINGS.get("admin_ids") or live.get("admin_ids", [])
     return {
@@ -493,10 +504,7 @@ async def save_telegram_settings_api(request: Request, _=Depends(require_auth)):
     TELEGRAM_SETTINGS["bot_token"] = token
     TELEGRAM_SETTINGS["admin_ids"] = admin_ids
     await save_state()
-    log_activity("telegram", "تنظیمات ربات تلگرام ذخیره شد", "ok")
-    status = await _tg_get_status()
-    return {"ok": True, "connected": status.get("connected", False), "bot_username": status.get("username")}
-    log_activity("auth", "رمز عبور پنل تغییر کرد", "ok")
+    log_activity("telegram", "تنظیمات ربات تلگرام بروزرسانی شد", "ok")
     return {"ok": True}
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -834,8 +842,6 @@ from telegram_bot import (
     get_status as _tg_get_status,
     get_current_config as _tg_get_config,
 )
-
-TELEGRAM_SETTINGS: dict = {"bot_token": "", "admin_ids": []}
 
 # ── HTTP Proxy ────────────────────────────────────────────────────────────────
 _HOP = {"connection","keep-alive","proxy-authenticate","proxy-authorization",
