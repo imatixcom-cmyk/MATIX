@@ -1,9 +1,11 @@
 import asyncio
+import io
 import json
 import os
 import hashlib
 import secrets
 import time
+import zipfile
 import aiofiles
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -12,7 +14,7 @@ from collections import deque, defaultdict
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Depends
-from fastapi.responses import Response, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import Response, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import httpx
@@ -26,9 +28,10 @@ IRAN_TZ = ZoneInfo("Asia/Tehran")
 app = FastAPI(title="Matix", docs_url=None, redoc_url=None)
 
 # ── Persistence ───────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).resolve().parent  # ریشه‌ی سورس پروژه، برای بکاپ کامل
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-DATA_FILE = DATA_DIR / "x4g_state.json"
-SECRET_FILE = DATA_DIR / "x4g_secret.key"
+DATA_FILE = DATA_DIR / "matix_state.json"
+SECRET_FILE = DATA_DIR / "matix_secret.key"
 SAVE_LOCK = asyncio.Lock()
 
 def _load_or_create_secret() -> str:
@@ -115,6 +118,32 @@ async def save_state():
         except Exception as e:
             logger.warning(f"Could not save state: {e}")
 
+# ذخیره‌سازی دسته‌ای (debounce) — فقط برای رویدادهای پرتکرار مثل وصل/قطع هر
+# اتصال VLESS استفاده می‌شه. به‌جای نوشتن کامل state روی دیسک به‌ازای هر
+# اتصال/قطعی (که با صدها کاربر هم‌زمان می‌تونه فشار I/O زیادی ایجاد کنه)،
+# چند فراخوانی نزدیک به هم رو در یک بازه‌ی کوتاه با هم ادغام می‌کنه و فقط یک
+# بار در پایان بازه ذخیره می‌کنه. داده‌ی نمایشی (حجم مصرفی، اتصالات و ...)
+# همیشه از حافظه (LINKS/connections) خونده می‌شه، پس این تاخیر هیچ تاثیری
+# روی داشبورد/لینک ساب نداره؛ فقط نوشتن روی دیسک (برای بازیابی بعد از
+# ری‌استارت) کمی به تاخیر می‌افته. در خاموش‌شدن عادی سرور (shutdown) هم یک
+# save_state فوری و کامل انجام می‌شه، پس دیتا در ری‌استارت‌های معمولی از بین
+# نمی‌ره؛ فقط در کرش ناگهانی وسط بازه‌ی تاخیر، آخرین چند ثانیه ممکنه ذخیره
+# نشده باشه.
+SAVE_DEBOUNCE_SECONDS = 8
+_save_debounce_task: "asyncio.Task | None" = None
+
+def schedule_save():
+    global _save_debounce_task
+    if _save_debounce_task is not None and not _save_debounce_task.done():
+        return
+    async def _delayed_save():
+        try:
+            await asyncio.sleep(SAVE_DEBOUNCE_SECONDS)
+            await save_state()
+        except Exception as e:
+            logger.warning(f"Debounced save failed: {e}")
+    _save_debounce_task = asyncio.create_task(_delayed_save())
+
 # ── In-memory state ───────────────────────────────────────────────────────────
 connections: dict = {}
 stats = {
@@ -164,7 +193,7 @@ def log_activity(kind: str, message: str, level: str = "info"):
     })
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-SESSION_COOKIE = "x4g_session"
+SESSION_COOKIE = "matix_session"
 SESSION_TTL = 60 * 60 * 24 * 365
 
 def hash_password(pw: str) -> str:
@@ -481,6 +510,55 @@ async def api_change_password(request: Request, token=Depends(require_auth)):
     await save_state()
     log_activity("auth", "رمز عبور پنل تغییر کرد", "ok")
     return {"ok": True}
+
+# ── Backup / Migration ─────────────────────────────────────────────────────────
+# پکیج کامل: سورس پروژه (main.py, pages.py, telegram_bot.py, ...) + دیتای فعلی
+# (کانفیگ‌ها، رمز، تنظیمات ربات) از DATA_DIR — برای انتقال آسون به هاست بعدی
+# وقتی سرویس Railway فعلی تموم شد. کافیه zip رو extract کنی، دیتای پوشه‌ی data/
+# رو بریزی توی DATA_DIR جدید (یا یه Volume تازه)، و همون‌جا دوباره دیپلوی کنی —
+# همه‌ی کانفیگ‌ها و لینک‌ها و رمز پنل دقیقاً همونی می‌مونه که بود.
+_BACKUP_EXCLUDE_DIRS = {"__pycache__", ".git", "venv", ".venv", "node_modules", ".idea", ".vscode"}
+_BACKUP_EXCLUDE_SUFFIXES = {".pyc"}
+
+
+@app.get("/api/backup/download")
+async def download_backup(_=Depends(require_auth)):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # سورس پروژه
+        for path in BASE_DIR.rglob("*"):
+            if path.is_dir():
+                continue
+            rel = path.relative_to(BASE_DIR)
+            if any(part in _BACKUP_EXCLUDE_DIRS for part in rel.parts):
+                continue
+            if path.suffix in _BACKUP_EXCLUDE_SUFFIXES:
+                continue
+            zf.write(path, f"source/{rel}")
+        # دیتای فعلی (کانفیگ‌ها، secret، فروشگاه)
+        if DATA_DIR.exists():
+            for path in DATA_DIR.rglob("*"):
+                if path.is_file():
+                    zf.write(path, f"data/{path.relative_to(DATA_DIR)}")
+        readme = (
+            "راهنمای انتقال Matix به هاست جدید\n"
+            "──────────────────────────────────\n"
+            "۱) پوشه‌ی source/ رو به یه ریپوی گیت‌هاب جدید پوش کن (یا مستقیم دیپلوی کن).\n"
+            "۲) یه Volume دائمی روی مسیر DATA_DIR بساز و کل محتوای پوشه‌ی data/ رو توش بریز.\n"
+            "۳) متغیرهای محیطی رو دستی روی هاست جدید تنظیم کن (این‌ها داخل بکاپ نیستن):\n"
+            "   ADMIN_PASSWORD, SECRET_KEY (اختیاری – یه فایل matix_secret.key هم داخل data/ هست),\n"
+            "   TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_IDS, DATA_DIR, PUBLIC_DOMAIN (در صورت نیاز)\n"
+            "۴) بعد از دیپلوی، رمز پنل و تمام لینک‌ها/کانفیگ‌ها دقیقاً همونی می‌مونه که بود.\n"
+        )
+        zf.writestr("README-MIGRATION.txt", readme)
+    buf.seek(0)
+    filename = f"matix-backup-{datetime.now(IRAN_TZ).strftime('%Y%m%d-%H%M')}.zip"
+    log_activity("backup", "بکاپ کامل سورس و کانفیگ‌ها دانلود شد", "ok")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 # ── Telegram Bot Settings ─────────────────────────────────────────────────────
 @app.get("/api/settings/telegram")

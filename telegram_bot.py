@@ -55,7 +55,7 @@ BOT_NAME = "Matix"
 V2BOX_URL = "https://play.google.com/store/apps/details?id=dev.hexasoftware.v2box"
 
 # ── فروشگاه: قیمت‌گذاری، سفارش‌ها، مصرف‌کنندگان تست رایگان ────────────────────
-SHOP_FILE = DATA_DIR / "aurora_shop.json"
+SHOP_FILE = DATA_DIR / "matix_shop.json"
 SHOP_LOCK = asyncio.Lock()
 SHOP: dict = {
     "price_per_gb": 15000,      # تومان به‌ازای هر گیگابایت

@@ -1211,6 +1211,16 @@ a{color:inherit;text-decoration:none}
         <div class="srv-tile"><div class="srv-tile-icon"><i class="ti ti-cloud"></i></div><div class="srv-tile-text"><div class="srv-tile-label">پلتفرم</div><div class="srv-tile-val">Railway</div></div></div>
         <div class="srv-tile" style="grid-column:1/-1"><div class="srv-tile-icon"><i class="ti ti-device-floppy"></i></div><div class="srv-tile-text"><div class="srv-tile-label">ذخیره‌سازی</div><div class="srv-tile-val">JSON File (/data)</div></div></div>
       </div>
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--card-b)">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <div class="srv-tile-icon"><i class="ti ti-package"></i></div>
+          <div>
+            <div class="srv-tile-label" style="font-weight:600">بکاپ کامل پروژه</div>
+            <div style="color:var(--t3);font-size:11.5px">دانلود کل سورس + تمام کانفیگ‌ها، برای انتقال به هاست بعدی</div>
+          </div>
+        </div>
+        <button class="pw-submit" style="background:linear-gradient(135deg,#2ecc71,#27ae60);box-shadow:0 6px 18px rgba(39,174,96,.32)" onclick="downloadBackup()" id="backup-btn"><i class="ti ti-download"></i> دانلود بکاپ کامل (سورس + کانفیگ‌ها)</button>
+      </div>
     </div>
     <div class="pw-panel">
       <div class="pw-hero">
@@ -1297,7 +1307,7 @@ a{color:inherit;text-decoration:none}
 </section>
 </main>
 <script>
-let isDark=localStorage.getItem('x4g-theme')!=='light';
+let isDark=localStorage.getItem('matix-theme')!=='light';
 function applyTheme(dark){
   document.documentElement.setAttribute('data-theme',dark?'dark':'light');
   const icon=dark?'ti-sun':'ti-moon',label=dark?'تم روشن':'تم تاریک';
@@ -1305,7 +1315,7 @@ function applyTheme(dark){
   document.getElementById('theme-label').textContent=label;
   const mobI=document.getElementById('theme-mob-icon');if(mobI)mobI.className='ti '+icon;
 }
-function toggleTheme(){isDark=!isDark;localStorage.setItem('x4g-theme',isDark?'dark':'light');applyTheme(isDark)}
+function toggleTheme(){isDark=!isDark;localStorage.setItem('matix-theme',isDark?'dark':'light');applyTheme(isDark)}
 applyTheme(isDark);
 function toast(msg,type=''){
   const t=document.getElementById('toast');
@@ -1336,6 +1346,28 @@ async function authF(url,opts={}){
   const r=await fetch(url,opts);
   if(r.status===401){location.href='/login';throw new Error('unauthorized')}
   return r;
+}
+async function downloadBackup(){
+  const btn=document.getElementById('backup-btn');
+  const orig=btn.innerHTML;
+  btn.disabled=true;btn.innerHTML='<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> در حال آماده‌سازی...';
+  try{
+    const r=await authF('/api/backup/download');
+    if(!r.ok)throw new Error('backup failed');
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename="?([^"]+)"?/);
+    const fname=m?m[1]:`matix-backup-${Date.now()}.zip`;
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download=fname;document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    toast('بکاپ با موفقیت دانلود شد ✓','ok');
+  }catch(e){
+    toast('خطا در دانلود بکاپ','err');
+  }finally{
+    btn.disabled=false;btn.innerHTML=orig;
+  }
 }
 function setQuota(val,unit,el){
   document.getElementById('nl-val').value = val===0?'':val;
@@ -2225,12 +2257,12 @@ html,body{{min-height:100%;background:var(--bg);font-family:var(--serif);color:v
 const UUID_KEY='{uuid_key}';
 let savedPw='';
 
-let isDark=localStorage.getItem('x4g-pub-theme')!=='light';
+let isDark=localStorage.getItem('matix-pub-theme')!=='light';
 function applyTheme(dark){{
   document.documentElement.setAttribute('data-theme',dark?'dark':'light');
   document.getElementById('theme-icon').className='ti '+(dark?'ti-sun':'ti-moon');
 }}
-function toggleTheme(){{isDark=!isDark;localStorage.setItem('x4g-pub-theme',isDark?'dark':'light');applyTheme(isDark)}}
+function toggleTheme(){{isDark=!isDark;localStorage.setItem('matix-pub-theme',isDark?'dark':'light');applyTheme(isDark)}}
 applyTheme(isDark);
 
 function toast(msg,type=''){{
@@ -2313,9 +2345,9 @@ function renderContent(d){{
   const baseSubUrl = d.sub_url || (window.location.protocol + '//' + window.location.host + '/p/' + UUID_KEY);
   const subUrl = baseSubUrl;
 
-  window._x4gSubUrl  = subUrl;
-  window._x4gSubName = d.name;
-  window._x4gLinks   = d.links.map(l => ({{
+  window._matixSubUrl  = subUrl;
+  window._matixSubName = d.name;
+  window._matixLinks   = d.links.map(l => ({{
     vless : l.vless_link,
     sub   : l.sub_url,
     label : l.label,
@@ -2330,11 +2362,11 @@ function renderContent(d){{
       <div class="sub-sub-box">
         <span class="sub-sub-url">${{esc(subUrl)}}</span>
         <button class="btn btn-blue" style="padding:7px 12px;font-size:10.5px"
-          onclick="navigator.clipboard.writeText(window._x4gSubUrl).then(()=>toast('لینک ساب کپی شد ✓','ok'))">
+          onclick="navigator.clipboard.writeText(window._matixSubUrl).then(()=>toast('لینک ساب کپی شد ✓','ok'))">
           <i class="ti ti-copy"></i> کپی لینک ساب
         </button>
         <button class="btn btn-blue" style="padding:7px 12px;font-size:10.5px"
-          onclick="showQR(window._x4gSubName + ' — کل گروه', window._x4gSubUrl)">
+          onclick="showQR(window._matixSubName + ' — کل گروه', window._matixSubUrl)">
           <i class="ti ti-qrcode"></i> QR کل
         </button>
       </div>
@@ -2403,11 +2435,11 @@ function renderContent(d){{
               </div>
               <div class="cfg-actions">
                 <button class="btn btn-blue"
-                  onclick="navigator.clipboard.writeText(window._x4gLinks[${{i}}].vless).then(()=>toast('لینک کپی شد ✓','ok'))">
+                  onclick="navigator.clipboard.writeText(window._matixLinks[${{i}}].vless).then(()=>toast('لینک کپی شد ✓','ok'))">
                   <i class="ti ti-copy"></i> کپی لینک
                 </button>
                 <button class="btn btn-blue"
-                  onclick="showQR(window._x4gLinks[${{i}}].label, window._x4gLinks[${{i}}].vless)">
+                  onclick="showQR(window._matixLinks[${{i}}].label, window._matixLinks[${{i}}].vless)">
                   <i class="ti ti-qrcode"></i> QR
                 </button>
               </div>
@@ -2421,7 +2453,7 @@ function renderContent(d){{
 }}
 
 function copyAllConfigs(){{
-  const links=window._x4gLinks||[];
+  const links=window._matixLinks||[];
   if(!links.length){{toast('کانفیگی برای کپی نیست','');return}}
   const text=links.map(l=>l.vless).join('\\n');
   navigator.clipboard.writeText(text).then(()=>toast('همه‌ی '+toFa(links.length)+' کانفیگ کپی شد ✓','ok'));
