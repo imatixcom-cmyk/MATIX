@@ -892,6 +892,7 @@ a{color:inherit;text-decoration:none}
         <div class="cp-head-title">ساخت کانفیگ جدید</div>
         <div class="cp-head-sub">UUID تصادفی · سهمیه، انقضا و پروتکل رو انتخاب کن</div>
       </div>
+      <button class="chip" style="margin-right:auto;white-space:nowrap;font-weight:800" onclick="applyGamingPreset()" title="XHTTP + fingerprint:chrome + ALPN:h2,http/1.1 + بدون محدودیت سرعت">🎮 پریست گیمینگ (پینگ پایین)</button>
     </div>
     <div class="cp-body">
       <div class="cp-row">
@@ -1617,6 +1618,21 @@ async function openLinkChart(uuid,label){
     linkChart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'مصرف (MB)',data:vals,backgroundColor:'rgba(139,92,246,.55)',borderRadius:5,maxBarThickness:22}]},
       options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{beginAtZero:true}}}});
   }catch(e){toast('خطا در دریافت تاریخچه مصرف','err')}
+}
+// پریست «گیمینگ / پینگ پایین»: فرم ساخت کانفیگ رو با تنظیمات بهینه برای بازی پر می‌کنه
+// (XHTTP + fingerprint:chrome + ALPN:h2,http/1.1 + بدون محدودیت سرعت). همون فیلدهای
+// فرم استفاده می‌شه، پس بعدش فقط باید دکمه‌ی «ساخت کانفیگ» عادی رو بزنی.
+function applyGamingPreset(){
+  if(!document.getElementById('nl-label').value.trim())document.getElementById('nl-label').value='🎮 گیمینگ (پینگ پایین)';
+  if(!document.getElementById('nl-note').value.trim())document.getElementById('nl-note').value='بهینه‌شده برای بازی: XHTTP + HTTP/2 + بدون محدودیت سرعت';
+  const xhttpCard=document.querySelector('.proto-card[data-val="xhttp"]');
+  if(xhttpCard)selectProto('xhttp',xhttpCard);
+  document.getElementById('nl-fp').value='chrome';
+  document.getElementById('nl-alpn-preset').value='h2,http/1.1';
+  onAlpnPresetChange();
+  const speedChips=document.querySelectorAll('#speed-chips .chip');
+  if(speedChips.length)setSpeedLimit(0,speedChips[0]);
+  toast('پریست گیمینگ اعمال شد — حالا «ساخت کانفیگ» رو بزن ✓','ok');
 }
 async function createLink(){
   const label=document.getElementById('nl-label').value.trim()||'کانفیگ جدید';

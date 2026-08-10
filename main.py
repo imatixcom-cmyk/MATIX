@@ -183,6 +183,28 @@ MIN_PORT, MAX_PORT = 1, 65535
 # محدودیت سرعت (0 = نامحدود). واحد ذخیره‌سازی داخلی همیشه بایت‌بر‌ثانیه است.
 DEFAULT_SPEED_LIMIT = 0
 
+# ── پریست «گیمینگ / پینگ پایین» ─────────────────────────────────────────────
+# یک تنظیم آماده برای ساخت سریع کانفیگ‌های مخصوص بازی:
+#  • protocol=xhttp → ترابرد XHTTP (مود auto: کلاینت بر اساس نوع اتصال بین
+#    packet-up/stream-up انتخاب می‌کنه؛ stream-up سربار کمتری نسبت به فریم‌های
+#    WebSocket داره و برای ترافیک کم‌حجم و پرتکرار بازی‌ها مناسب‌تره)
+#  • alpn=h2,http/1.1 → HTTP/2 چندگانه‌سازی رو فعال می‌کنه (چند جریان روی یک
+#    اتصال، بدون هندشیک تکراری) که تأخیر اتصال‌های جدید داخل بازی رو کم می‌کنه
+#  • fingerprint=chrome → رایج‌ترین و پایدارترین امضای TLS، کمترین احتمال
+#    افت/قطع اتصال روی مسیر
+#  • بدون محدودیت حجم/سرعت (0) چون هرگونه throttling می‌تونه در بازی حس شه
+# نکته‌ی مهم: این پریست فقط تنظیمات ترابرد/اتصال رو بهینه می‌کنه؛ خودِ پینگ
+# نهایی همیشه به فاصله‌ی فیزیکی سرور تا کاربر و کیفیت مسیر شبکه هم بستگی داره.
+GAMING_PRESET = {
+    "protocol": "xhttp",
+    "fingerprint": "chrome",
+    "alpn": "h2,http/1.1",
+    "port": DEFAULT_PORT,
+    "speed_limit_bytes": 0,
+}
+GAMING_DEFAULT_LABEL = "🎮 گیمینگ (پینگ پایین)"
+GAMING_DEFAULT_NOTE = "بهینه‌شده برای بازی: XHTTP + HTTP/2 + بدون محدودیت سرعت"
+
 def log_activity(kind: str, message: str, level: str = "info"):
     """ثبت یک رخداد در لاگ فعالیت‌ها (ساخت/حذف/ویرایش کانفیگ، ورود، و...)."""
     activity_logs.append({
@@ -776,32 +798,41 @@ async def set_link_active(uid: str, active: bool) -> dict | None:
 @app.post("/api/links")
 async def create_link(request: Request, _=Depends(require_auth)):
     body = await request.json()
+
+    # اگه preset=gaming ست شده باشه، تنظیمات ترابرد/fingerprint/alpn/سرعت رو
+    # با پریست گیمینگ پر می‌کنیم (مگر این‌که کاربر صریحاً مقدار دیگه‌ای داده باشه)
+    preset = (body.get("preset") or "").strip().lower()
+    is_gaming = preset == "gaming"
+
     lv = float(body.get("limit_value") or 0)
     lu = body.get("limit_unit") or "GB"
     limit_bytes = 0 if lv <= 0 else parse_size_to_bytes(lv, lu)
     exp_days = int(body.get("expires_days") or 0)
     expires_at = (datetime.now() + timedelta(days=exp_days)).isoformat() if exp_days > 0 else None
     try:
-        port = int(body.get("port") or DEFAULT_PORT)
+        port = int(body.get("port") or (GAMING_PRESET["port"] if is_gaming else DEFAULT_PORT))
     except (TypeError, ValueError):
-        port = DEFAULT_PORT
+        port = GAMING_PRESET["port"] if is_gaming else DEFAULT_PORT
     try:
         ip_limit = int(body.get("ip_limit") or 0)
     except (TypeError, ValueError):
         ip_limit = 0
 
-    sv = float(body.get("speed_limit_value") or 0)
-    su = body.get("speed_limit_unit") or "MBIT"
-    speed_limit_bytes = 0 if sv <= 0 else parse_speed_to_bytes(sv, su)
+    if is_gaming and "speed_limit_value" not in body:
+        speed_limit_bytes = GAMING_PRESET["speed_limit_bytes"]
+    else:
+        sv = float(body.get("speed_limit_value") or 0)
+        su = body.get("speed_limit_unit") or "MBIT"
+        speed_limit_bytes = 0 if sv <= 0 else parse_speed_to_bytes(sv, su)
 
     uid, link = await make_link(
-        label=body.get("label") or "لینک جدید",
+        label=body.get("label") or (GAMING_DEFAULT_LABEL if is_gaming else "لینک جدید"),
         limit_bytes=limit_bytes,
         expires_at=expires_at,
-        note=body.get("note") or "",
-        protocol=body.get("protocol") or DEFAULT_PROTOCOL,
-        fingerprint=body.get("fingerprint") or DEFAULT_FINGERPRINT,
-        alpn=body.get("alpn") or "",
+        note=body.get("note") or (GAMING_DEFAULT_NOTE if is_gaming else ""),
+        protocol=body.get("protocol") or (GAMING_PRESET["protocol"] if is_gaming else DEFAULT_PROTOCOL),
+        fingerprint=body.get("fingerprint") or (GAMING_PRESET["fingerprint"] if is_gaming else DEFAULT_FINGERPRINT),
+        alpn=body.get("alpn") or (GAMING_PRESET["alpn"] if is_gaming else ""),
         port=port,
         ip_limit=ip_limit,
         speed_limit_bytes=speed_limit_bytes,

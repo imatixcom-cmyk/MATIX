@@ -43,6 +43,9 @@ from main import (
     MAX_PORT,
     parse_size_to_bytes,
     parse_speed_to_bytes,
+    GAMING_PRESET,
+    GAMING_DEFAULT_LABEL,
+    GAMING_DEFAULT_NOTE,
 )
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -301,6 +304,7 @@ T = {
     "usage_not_found": {"fa": "❗️ کانفیگی با این لینک/UUID پیدا نشد. دوباره امتحان کن یا از منو یکی از «کانفیگ‌های من» رو انتخاب کن.", "en": "❗️ No config found for that link/UUID. Try again or pick one from \"My Configs\"."},
     "btn_admin_manage": {"fa": "🗂 مدیریت کانفیگ‌ها", "en": "🗂 Manage Configs"},
     "btn_admin_new": {"fa": "➕ ساخت دستی", "en": "➕ Manual Create"},
+    "btn_admin_gaming": {"fa": "🎮 گیمینگ (پینگ پایین)", "en": "🎮 Gaming (Low Ping)"},
     "btn_admin_orders": {"fa": "📥 سفارش‌های در انتظار", "en": "📥 Pending Orders"},
     "btn_admin_settings": {"fa": "⚙️ تنظیمات فروش", "en": "⚙️ Shop Settings"},
     "btn_admin_discounts": {"fa": "🏷 کدهای تخفیف", "en": "🏷 Discount Codes"},
@@ -596,6 +600,7 @@ def _home_view(chat_id: int):
         kb = {"inline_keyboard": [
             [{"text": _t(chat_id, "btn_admin_manage"), "callback_data": "list:0"},
              {"text": _t(chat_id, "btn_admin_new"), "callback_data": "newcfg"}],
+            [{"text": _t(chat_id, "btn_admin_gaming"), "callback_data": "newcfg:gaming"}],
             [{"text": orders_label, "callback_data": "orders:0"},
              {"text": _t(chat_id, "btn_admin_settings"), "callback_data": "settings"}],
             [{"text": _t(chat_id, "btn_check_usage"), "callback_data": "usage:start"},
@@ -1908,6 +1913,26 @@ async def _handle_callback(cb: dict):
             return
         _pending[chat_id] = {"action": "admin_wizard", "step": "label", "data": {}}
         await _edit(chat_id, message_id, _wizard_prompt("label", {}), _wizard_cancel_kb(chat_id))
+        return
+
+    if data == "newcfg:gaming":
+        # ساخت سریع «یک‌کلیکی» کانفیگ گیمینگ، بدون عبور از ویزارد مرحله‌به‌مرحله.
+        # تنظیمات ترابرد/fingerprint/alpn/سرعت مستقیماً از GAMING_PRESET میان.
+        if not _is_admin(chat_id):
+            await _answer_cb(cb_id, _t(chat_id, "no_access_cb"), alert=True)
+            return
+        await _play_frames(chat_id, message_id, _GEN_FRAMES[_lg(chat_id)])
+        uid, link = await make_link(
+            label=GAMING_DEFAULT_LABEL,
+            note=GAMING_DEFAULT_NOTE,
+            protocol=GAMING_PRESET["protocol"],
+            fingerprint=GAMING_PRESET["fingerprint"],
+            alpn=GAMING_PRESET["alpn"],
+            port=GAMING_PRESET["port"],
+            speed_limit_bytes=GAMING_PRESET["speed_limit_bytes"],
+        )
+        link["source"] = "admin"
+        await _edit(chat_id, message_id, _t(chat_id, "created_msg", detail=_format_detail(uid, link)), _link_detail_kb(chat_id, uid, link["active"]))
         return
 
     if data.startswith("toggle:"):
