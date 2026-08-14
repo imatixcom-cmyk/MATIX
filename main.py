@@ -4,6 +4,7 @@ import json
 import os
 import hashlib
 import secrets
+import sys
 import time
 import zipfile
 import aiofiles
@@ -89,6 +90,11 @@ async def load_state():
             if "telegram" in data:
                 TELEGRAM_SETTINGS["bot_token"] = data["telegram"].get("bot_token", "")
                 TELEGRAM_SETTINGS["admin_ids"] = data["telegram"].get("admin_ids", [])
+            if "update" in data:
+                UPDATE_SETTINGS["repo"] = data["update"].get("repo", UPDATE_SETTINGS["repo"])
+                UPDATE_SETTINGS["branch"] = data["update"].get("branch", UPDATE_SETTINGS["branch"])
+                UPDATE_SETTINGS["current_sha"] = data["update"].get("current_sha", "")
+                UPDATE_SETTINGS["last_checked"] = data["update"].get("last_checked", "")
             # لینک پیش‌فرضی که در نسخه‌های قبلی به‌صورت خودکار ساخته می‌شد دیگر
             # پشتیبانی نمی‌شود؛ اگر از قبل روی دیسک ذخیره شده باشد، حذفش می‌کنیم.
             legacy_default_uids = [uid for uid, l in LINKS.items() if l.get("is_default")]
@@ -109,6 +115,7 @@ async def save_state():
                 "subs": dict(SUBS),
                 "password_hash": AUTH["password_hash"],
                 "telegram": dict(TELEGRAM_SETTINGS),
+                "update": dict(UPDATE_SETTINGS),
                 "saved_at": datetime.now().isoformat(),
             }
             tmp = DATA_FILE.with_suffix(".tmp")
@@ -164,6 +171,22 @@ SUBS_LOCK = asyncio.Lock()
 # متغیرهای محیطی TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_IDS بیشتره)
 TELEGRAM_SETTINGS: dict = {"bot_token": "", "admin_ids": []}
 
+# ── بروزرسانی خودکار از گیت‌هاب ────────────────────────────────────────────────
+# با زدن دکمه‌ی «بررسی و اعمال بروزرسانی» در پنل، فایل‌های سورس از یک ریپازیتوری
+# گیت‌هاب (شاخه‌ی مشخص‌شده) دانلود و جایگزین فایل‌های محلی می‌شن، سپس فرایند
+# سرور ری‌استارت می‌شه تا کد جدید بارگذاری بشه.
+UPDATE_SETTINGS: dict = {
+    "repo": os.environ.get("GITHUB_REPO", "").strip(),
+    "branch": os.environ.get("GITHUB_BRANCH", "main").strip() or "main",
+    "current_sha": "",
+    "last_checked": "",
+}
+UPDATE_FILES = [
+    "main.py", "pages.py", "telegram_bot.py",
+    "xhttp_siz10.py", "speed_limit.py", "relay_vless.py",
+    "requirements.txt",
+]
+
 # پروتکل‌های پشتیبانی‌شده برای هر کانفیگ
 PROTOCOLS = ("vless-ws", "xhttp")
 DEFAULT_PROTOCOL = "vless-ws"
@@ -182,28 +205,6 @@ MIN_PORT, MAX_PORT = 1, 65535
 
 # محدودیت سرعت (0 = نامحدود). واحد ذخیره‌سازی داخلی همیشه بایت‌بر‌ثانیه است.
 DEFAULT_SPEED_LIMIT = 0
-
-# ── پریست «گیمینگ / پینگ پایین» ─────────────────────────────────────────────
-# یک تنظیم آماده برای ساخت سریع کانفیگ‌های مخصوص بازی:
-#  • protocol=xhttp → ترابرد XHTTP (مود auto: کلاینت بر اساس نوع اتصال بین
-#    packet-up/stream-up انتخاب می‌کنه؛ stream-up سربار کمتری نسبت به فریم‌های
-#    WebSocket داره و برای ترافیک کم‌حجم و پرتکرار بازی‌ها مناسب‌تره)
-#  • alpn=h2,http/1.1 → HTTP/2 چندگانه‌سازی رو فعال می‌کنه (چند جریان روی یک
-#    اتصال، بدون هندشیک تکراری) که تأخیر اتصال‌های جدید داخل بازی رو کم می‌کنه
-#  • fingerprint=chrome → رایج‌ترین و پایدارترین امضای TLS، کمترین احتمال
-#    افت/قطع اتصال روی مسیر
-#  • بدون محدودیت حجم/سرعت (0) چون هرگونه throttling می‌تونه در بازی حس شه
-# نکته‌ی مهم: این پریست فقط تنظیمات ترابرد/اتصال رو بهینه می‌کنه؛ خودِ پینگ
-# نهایی همیشه به فاصله‌ی فیزیکی سرور تا کاربر و کیفیت مسیر شبکه هم بستگی داره.
-GAMING_PRESET = {
-    "protocol": "xhttp",
-    "fingerprint": "chrome",
-    "alpn": "h2,http/1.1",
-    "port": DEFAULT_PORT,
-    "speed_limit_bytes": 0,
-}
-GAMING_DEFAULT_LABEL = "🎮 گیمینگ (پینگ پایین)"
-GAMING_DEFAULT_NOTE = "بهینه‌شده برای بازی: XHTTP + HTTP/2 + بدون محدودیت سرعت"
 
 def log_activity(kind: str, message: str, level: str = "info"):
     """ثبت یک رخداد در لاگ فعالیت‌ها (ساخت/حذف/ویرایش کانفیگ، ورود، و...)."""
@@ -618,6 +619,116 @@ async def save_telegram_settings_api(request: Request, _=Depends(require_auth)):
     log_activity("telegram", "تنظیمات ربات تلگرام بروزرسانی شد", "ok")
     return {"ok": True}
 
+# ── بروزرسانی خودکار از گیت‌هاب ────────────────────────────────────────────────
+@app.get("/api/update/settings")
+async def get_update_settings_api(_=Depends(require_auth)):
+    sha = UPDATE_SETTINGS.get("current_sha", "")
+    return {
+        "repo": UPDATE_SETTINGS.get("repo", ""),
+        "branch": UPDATE_SETTINGS.get("branch", "main"),
+        "current_sha": sha[:7] if sha else "",
+        "last_checked": UPDATE_SETTINGS.get("last_checked", ""),
+    }
+
+@app.post("/api/update/settings")
+async def save_update_settings_api(request: Request, _=Depends(require_auth)):
+    body = await request.json()
+    repo = str(body.get("repo", "")).strip().strip("/")
+    branch = str(body.get("branch", "")).strip() or "main"
+    if repo.startswith("http"):
+        # اجازه بده لینک کامل گیت‌هاب هم پیست بشه، خودمون owner/repo رو استخراج می‌کنیم
+        repo = repo.split("github.com/")[-1].strip("/")
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+    if repo and repo.count("/") != 1:
+        raise HTTPException(status_code=400, detail="فرمت ریپازیتوری باید owner/repo باشد")
+    UPDATE_SETTINGS["repo"] = repo
+    UPDATE_SETTINGS["branch"] = branch
+    await save_state()
+    log_activity("update", "تنظیمات بروزرسانی گیت‌هاب ذخیره شد", "ok")
+    return {"ok": True}
+
+async def _fetch_latest_commit(repo: str, branch: str) -> dict:
+    r = await http_client.get(
+        f"https://api.github.com/repos/{repo}/commits/{branch}",
+        headers={"Accept": "application/vnd.github+json"},
+    )
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail="ریپازیتوری یا شاخه پیدا نشد")
+    r.raise_for_status()
+    return r.json()
+
+@app.get("/api/update/check")
+async def check_update_api(_=Depends(require_auth)):
+    repo = UPDATE_SETTINGS.get("repo", "")
+    branch = UPDATE_SETTINGS.get("branch", "main")
+    if not repo:
+        raise HTTPException(status_code=400, detail="ابتدا آدرس ریپازیتوری گیت‌هاب را در تنظیمات وارد کنید")
+    try:
+        data = await _fetch_latest_commit(repo, branch)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"خطا در ارتباط با گیت‌هاب: {e}")
+    latest_sha = data.get("sha", "")
+    commit_info = data.get("commit", {}) or {}
+    message = (commit_info.get("message") or "").split("\n")[0][:160]
+    date = (commit_info.get("author") or {}).get("date", "")
+    current_sha = UPDATE_SETTINGS.get("current_sha", "")
+    UPDATE_SETTINGS["last_checked"] = datetime.now().isoformat()
+    await save_state()
+    return {
+        "has_update": bool(latest_sha) and latest_sha != current_sha,
+        "latest_sha": latest_sha[:7] if latest_sha else "",
+        "latest_message": message,
+        "latest_date": date,
+        "current_sha": current_sha[:7] if current_sha else None,
+    }
+
+@app.post("/api/update/apply")
+async def apply_update_api(_=Depends(require_auth)):
+    repo = UPDATE_SETTINGS.get("repo", "")
+    branch = UPDATE_SETTINGS.get("branch", "main")
+    if not repo:
+        raise HTTPException(status_code=400, detail="ابتدا آدرس ریپازیتوری گیت‌هاب را در تنظیمات وارد کنید")
+    try:
+        data = await _fetch_latest_commit(repo, branch)
+        latest_sha = data.get("sha", "")
+        if not latest_sha:
+            raise ValueError("سرور گیت‌هاب پاسخ نامعتبر داد")
+        updated_files = []
+        for fname in UPDATE_FILES:
+            url = f"https://raw.githubusercontent.com/{repo}/{branch}/{fname}"
+            fr = await http_client.get(url)
+            if fr.status_code != 200:
+                continue
+            new_content = fr.text
+            target = BASE_DIR / fname
+            old_content = target.read_text(encoding="utf-8") if target.exists() else None
+            if new_content != old_content:
+                target.write_text(new_content, encoding="utf-8")
+                updated_files.append(fname)
+        UPDATE_SETTINGS["current_sha"] = latest_sha
+        UPDATE_SETTINGS["last_checked"] = datetime.now().isoformat()
+        await save_state()
+        log_activity(
+            "update",
+            f"بروزرسانی از گیت‌هاب اعمال شد ({len(updated_files)} فایل تغییر کرد) — سرور در حال ری‌استارت است",
+            "ok",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_activity("update", f"خطا در بروزرسانی از گیت‌هاب: {e}", "error")
+        raise HTTPException(status_code=502, detail=f"خطا در بروزرسانی: {e}")
+
+    async def _restart_soon():
+        await asyncio.sleep(1.5)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    asyncio.create_task(_restart_soon())
+    return {"ok": True, "updated_files": updated_files, "sha": latest_sha[:7]}
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 @app.get("/stats")
 async def get_stats(_=Depends(require_auth)):
@@ -798,41 +909,32 @@ async def set_link_active(uid: str, active: bool) -> dict | None:
 @app.post("/api/links")
 async def create_link(request: Request, _=Depends(require_auth)):
     body = await request.json()
-
-    # اگه preset=gaming ست شده باشه، تنظیمات ترابرد/fingerprint/alpn/سرعت رو
-    # با پریست گیمینگ پر می‌کنیم (مگر این‌که کاربر صریحاً مقدار دیگه‌ای داده باشه)
-    preset = (body.get("preset") or "").strip().lower()
-    is_gaming = preset == "gaming"
-
     lv = float(body.get("limit_value") or 0)
     lu = body.get("limit_unit") or "GB"
     limit_bytes = 0 if lv <= 0 else parse_size_to_bytes(lv, lu)
     exp_days = int(body.get("expires_days") or 0)
     expires_at = (datetime.now() + timedelta(days=exp_days)).isoformat() if exp_days > 0 else None
     try:
-        port = int(body.get("port") or (GAMING_PRESET["port"] if is_gaming else DEFAULT_PORT))
+        port = int(body.get("port") or DEFAULT_PORT)
     except (TypeError, ValueError):
-        port = GAMING_PRESET["port"] if is_gaming else DEFAULT_PORT
+        port = DEFAULT_PORT
     try:
         ip_limit = int(body.get("ip_limit") or 0)
     except (TypeError, ValueError):
         ip_limit = 0
 
-    if is_gaming and "speed_limit_value" not in body:
-        speed_limit_bytes = GAMING_PRESET["speed_limit_bytes"]
-    else:
-        sv = float(body.get("speed_limit_value") or 0)
-        su = body.get("speed_limit_unit") or "MBIT"
-        speed_limit_bytes = 0 if sv <= 0 else parse_speed_to_bytes(sv, su)
+    sv = float(body.get("speed_limit_value") or 0)
+    su = body.get("speed_limit_unit") or "MBIT"
+    speed_limit_bytes = 0 if sv <= 0 else parse_speed_to_bytes(sv, su)
 
     uid, link = await make_link(
-        label=body.get("label") or (GAMING_DEFAULT_LABEL if is_gaming else "لینک جدید"),
+        label=body.get("label") or "لینک جدید",
         limit_bytes=limit_bytes,
         expires_at=expires_at,
-        note=body.get("note") or (GAMING_DEFAULT_NOTE if is_gaming else ""),
-        protocol=body.get("protocol") or (GAMING_PRESET["protocol"] if is_gaming else DEFAULT_PROTOCOL),
-        fingerprint=body.get("fingerprint") or (GAMING_PRESET["fingerprint"] if is_gaming else DEFAULT_FINGERPRINT),
-        alpn=body.get("alpn") or (GAMING_PRESET["alpn"] if is_gaming else ""),
+        note=body.get("note") or "",
+        protocol=body.get("protocol") or DEFAULT_PROTOCOL,
+        fingerprint=body.get("fingerprint") or DEFAULT_FINGERPRINT,
+        alpn=body.get("alpn") or "",
         port=port,
         ip_limit=ip_limit,
         speed_limit_bytes=speed_limit_bytes,

@@ -11,6 +11,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 import time
 
@@ -30,6 +31,7 @@ from main import (
     fmt_bytes,
     is_link_allowed,
     logger,
+    log_activity,
     save_state,
     DATA_DIR,
     PROTOCOLS,
@@ -43,9 +45,6 @@ from main import (
     MAX_PORT,
     parse_size_to_bytes,
     parse_speed_to_bytes,
-    GAMING_PRESET,
-    GAMING_DEFAULT_LABEL,
-    GAMING_DEFAULT_NOTE,
 )
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -82,6 +81,10 @@ SHOP: dict = {
     "known_users": [],            # لیست همه‌ی chat_id هایی که تا حالا با ربات تعامل داشته‌اند
     "required_channel": "",       # آیدی عددی یا یوزرنیم کانالی که عضویت توش اجباریه (خالی = بدون محدودیت)
     "required_channel_url": "",   # لینک عضویت در همون کانال (برای دکمه)
+    "support_username": "",       # یوزرنیم پشتیبانی برای دکمه‌ی «پشتیبانی» (بدون @)
+    "spins": {},                   # str(chat_id) -> تاریخ آخرین چرخش گردونه‌ی شانس (ISO date)
+    "spin_min": 2000,              # حداقل جایزه‌ی گردونه‌ی شانس (تومان)
+    "spin_max": 20000,             # حداکثر جایزه‌ی گردونه‌ی شانس (تومان)
 }
 
 async def _load_shop():
@@ -304,7 +307,6 @@ T = {
     "usage_not_found": {"fa": "❗️ کانفیگی با این لینک/UUID پیدا نشد. دوباره امتحان کن یا از منو یکی از «کانفیگ‌های من» رو انتخاب کن.", "en": "❗️ No config found for that link/UUID. Try again or pick one from \"My Configs\"."},
     "btn_admin_manage": {"fa": "🗂 مدیریت کانفیگ‌ها", "en": "🗂 Manage Configs"},
     "btn_admin_new": {"fa": "➕ ساخت دستی", "en": "➕ Manual Create"},
-    "btn_admin_gaming": {"fa": "🎮 گیمینگ (پینگ پایین)", "en": "🎮 Gaming (Low Ping)"},
     "btn_admin_orders": {"fa": "📥 سفارش‌های در انتظار", "en": "📥 Pending Orders"},
     "btn_admin_settings": {"fa": "⚙️ تنظیمات فروش", "en": "⚙️ Shop Settings"},
     "btn_admin_discounts": {"fa": "🏷 کدهای تخفیف", "en": "🏷 Discount Codes"},
@@ -441,20 +443,22 @@ def _share_url() -> str | None:
     return f"https://t.me/share/url?url=https://t.me/{_bot_username}&text={text}"
 
 async def _announce_purchase(order: dict):
-    """بعد از تایید سفارش، یه اعلان بدون‌هویت (بدون نام/کانفیگ مشتری) توی کانال تنظیم‌شده می‌فرسته."""
+    """بعد از تایید سفارش، یه اعلان توی کانال تنظیم‌شده می‌فرسته؛ هویت خریدار فقط نصفه (نصف آیدی/یوزرنیم) نشون داده می‌شه."""
     channel = SHOP.get("announce_channel")
     if not channel:
         return
     await _ensure_username_cached()
+    masked = _mask_identity(order.get("chat_id"), order.get("username"))
     text = (
         "🎉 <b>یک خرید تازه در Matix ثبت شد!</b>\n\n"
+        f"🙈 خریدار: <code>{masked}</code>\n"
         f"📦 حجم: <b>{order['volume_gb']} GB</b>\n"
         f"📅 مدت اعتبار: <b>{order['days']} روز</b>\n\n"
         "تو هم می‌تونی همین الان اینترنت آزاد و پرسرعتتو با چند لمس بسازی 👇"
     )
     kb = None
     if _bot_username:
-        kb = {"inline_keyboard": [[{"text": "🛒 من هم می‌خوام بخرم", "url": f"https://t.me/{_bot_username}?start=buy"}]]}
+        kb = {"inline_keyboard": [[_btn("🛒 من هم می‌خوام بخرم", url=f"https://t.me/{_bot_username}?start=buy", style="success")]]}
     await _call("sendMessage", chat_id=channel, text=text, parse_mode="HTML",
                 disable_web_page_preview=True, reply_markup=kb)
 
@@ -592,39 +596,46 @@ async def _notify_admins(text: str, kb: dict | None = None):
 
 # ── Keyboards: Home (چیدمان کارتی/شبکه‌ای — دوستونه) ─────────────────────────
 def _home_view(chat_id: int):
+    bismillah = "🕊️ به نام خدا\n\n"
     if _is_admin(chat_id):
-        title = _t(chat_id, "admin_home_title")
+        title = bismillah + _t(chat_id, "admin_home_title")
         sub = _t(chat_id, "admin_home_sub")
         n_pending = sum(1 for o in SHOP["orders"].values() if o["status"] == "pending")
         orders_label = _t(chat_id, "btn_admin_orders") + (f" ({n_pending})" if n_pending else "")
         kb = {"inline_keyboard": [
-            [{"text": _t(chat_id, "btn_admin_manage"), "callback_data": "list:0"},
-             {"text": _t(chat_id, "btn_admin_new"), "callback_data": "newcfg"}],
-            [{"text": _t(chat_id, "btn_admin_gaming"), "callback_data": "newcfg:gaming"}],
-            [{"text": orders_label, "callback_data": "orders:0"},
-             {"text": _t(chat_id, "btn_admin_settings"), "callback_data": "settings"}],
-            [{"text": _t(chat_id, "btn_check_usage"), "callback_data": "usage:start"},
-             {"text": _t(chat_id, "btn_admin_stats"), "callback_data": "stats:home"}],
-            [{"text": _t(chat_id, "btn_admin_broadcast"), "callback_data": "bcast:start"}],
-            [{"text": _t(chat_id, "btn_refresh"), "callback_data": "home"},
-             {"text": _t(chat_id, "btn_lang"), "callback_data": "lang:toggle"}],
+            [_btn(_t(chat_id, "btn_admin_manage"), "list:0", style="primary"),
+             _btn(_t(chat_id, "btn_admin_new"), "newcfg", style="success")],
+            [_btn(orders_label, "orders:0", style="destructive" if n_pending else "primary"),
+             _btn(_t(chat_id, "btn_admin_settings"), "settings", style="primary")],
+            [_btn(_t(chat_id, "btn_check_usage"), "usage:start"),
+             _btn(_t(chat_id, "btn_admin_stats"), "stats:home", style="primary")],
+            [_btn(f"👥 کاربران ربات ({len(SHOP.get('known_users', []))})", "users:count")],
+            [_btn(_t(chat_id, "btn_admin_broadcast"), "bcast:start", style="primary")],
+            [_btn(_t(chat_id, "btn_refresh"), "home"),
+             _btn(_t(chat_id, "btn_lang"), "lang:toggle")],
         ]}
     else:
-        title = _t(chat_id, "cust_home_title")
+        title = bismillah + _t(chat_id, "cust_home_title")
         sub = _t(chat_id, "cust_home_sub")
         wallet_label = _t(chat_id, "btn_wallet") + f" ({_wallet_balance(chat_id):,}ت)"
         rows = [
-            [{"text": _t(chat_id, "btn_buy"), "callback_data": "buy:start"},
-             {"text": _t(chat_id, "btn_trial"), "callback_data": "trial:claim"}],
-            [{"text": _t(chat_id, "btn_myconfigs"), "callback_data": "mine:0"},
-             {"text": _t(chat_id, "btn_check_usage"), "callback_data": "usage:start"}],
-            [{"text": wallet_label, "callback_data": "wallet:home"},
-             {"text": _t(chat_id, "btn_referral"), "callback_data": "ref:home"}],
-            [{"text": _t(chat_id, "btn_help"), "callback_data": "help"}],
+            [_btn(_t(chat_id, "btn_buy"), "buy:start", style="success"),
+             _btn("♻️ تمدید سرویس", "mine:0", style="success")],
+            [_btn(_t(chat_id, "btn_trial"), "trial:claim", style="success"),
+             _btn("🎲 گردونه شانس", "spin:go", style="success")],
+            [_btn("🛍️ سرویس‌های من", "mine:0", style="destructive"),
+             _btn(wallet_label, "wallet:home", style="success")],
+            [_btn(_t(chat_id, "btn_referral") or "👥 زیر مجموعه‌گیری", "ref:home"),
+             _btn("💰 تعرفه اشتراک‌ها", "tariff:home", style="primary")],
+            [_btn("☎️ پشتیبانی", "support:home", style="primary"),
+             _btn(_t(chat_id, "btn_help") or "📚 آموزش", "help", style="primary")],
+            [_btn("🧑‍💼 درخواست نمایندگی", "reseller:request", style="success")],
+            [_btn(_t(chat_id, "btn_check_usage") or "🔍 استعلام حجم با لینک", "usage:start")],
         ]
-        rows.append([{"text": _t(chat_id, "btn_lang"), "callback_data": "lang:toggle"}])
+        rows.append([_btn(_t(chat_id, "btn_lang"), "lang:toggle")])
         kb = {"inline_keyboard": rows}
     return title, sub, kb
+
 
 def _links_list_kb(chat_id: int, page: int):
     items = sorted(LINKS.items(), key=lambda kv: kv[1].get("created_at", ""), reverse=True)
@@ -859,6 +870,27 @@ def _buyer_line(chat_id: int, username: str | None) -> str:
     display = f"@{username}" if looks_like_username else (username or str(chat_id))
     return f"👤 {display} — <code>{chat_id}</code> — <a href=\"tg://user?id={chat_id}\">مشاهده پروفایل</a>"
 
+def _mask_identity(chat_id: int, username: str | None) -> str:
+    """هویت خریدار رو نصفه‌پنهون می‌کنه (برای گزارش‌های عمومی کانال) — نیمی از آیدی/یوزرنیم معلومه، بقیه ستاره."""
+    looks_like_username = bool(username) and " " not in username and username.replace("_", "").isalnum()
+    if looks_like_username:
+        keep = max(1, len(username) // 2)
+        return "@" + username[:keep] + "•" * max(1, len(username) - keep)
+    s = str(chat_id)
+    keep = max(2, len(s) // 2)
+    return s[:keep] + "•" * (len(s) - keep)
+
+def _btn(text: str, cb: str | None = None, url: str | None = None, style: str | None = None) -> dict:
+    """یه دکمه‌ی این‌لاین می‌سازه؛ style یکی از success/primary/destructive (Bot API 9.4+) برای دکمه‌ی رنگی."""
+    b: dict = {"text": text}
+    if cb is not None:
+        b["callback_data"] = cb
+    if url is not None:
+        b["url"] = url
+    if style:
+        b["style"] = style
+    return b
+
 def _order_summary(order: dict) -> str:
     code_line = f"کد تخفیف: {order.get('discount_code')}\n" if order.get("discount_code") else ""
     return (
@@ -920,6 +952,8 @@ def _settings_kb(chat_id: int):
         [{"text": f"🔒 کانال اجباری: {SHOP.get('required_channel') or '—'}", "callback_data": "set:required_channel"},
          {"text": f"🔗 لینک عضویت", "callback_data": "set:required_channel_url"}],
         [{"text": f"🤝 پاداش رفرال: {SHOP.get('referral_bonus', 0):,}ت", "callback_data": "set:referral_bonus"}],
+        [{"text": f"☎️ یوزرنیم پشتیبانی: {SHOP.get('support_username') or '—'}", "callback_data": "set:support_username"}],
+        [{"text": f"🎲 جایزه گردونه: {SHOP.get('spin_min', 0):,}–{SHOP.get('spin_max', 0):,}ت", "callback_data": "set:spin_range"}],
         [{"text": f"💰 مبالغ پیشنهادی شارژ کیف پول: {', '.join(f'{int(a):,}' for a in SHOP.get('wallet_topup_presets', []))}", "callback_data": "set:wallet_topup_presets"}],
         [{"text": _t(chat_id, "btn_admin_discounts"), "callback_data": "discounts:0"}],
         [{"text": _t(chat_id, "btn_back_home"), "callback_data": "home"}],
@@ -1006,6 +1040,10 @@ async def _handle_message(msg: dict):
     if chat_id not in known:
         known.append(chat_id)
         await _save_shop()
+        who = f"@{username}" if username and " " not in username else (username or str(chat_id))
+        log_activity("telegram", f"👤 کاربر جدید وارد ربات شد: {who} ({chat_id}) — مجموع کاربران: {len(known)}", "ok")
+        if not _is_admin(chat_id):
+            await _notify_admins(f"👤 <b>کاربر جدید وارد ربات شد!</b>\n\n{_buyer_line(chat_id, username)}\n\nمجموع کاربران ربات: <b>{len(known)}</b>")
 
     if text.startswith("/start"):
         _pending.pop(chat_id, None)
@@ -1416,6 +1454,12 @@ async def _handle_message(msg: dict):
                 return
 
     # ── ورودی تنظیمات فروش (ادمین) ──────────────────────────────────────────
+    if pending and pending.get("action") == "support_msg" and text:
+        _pending.pop(chat_id, None)
+        await _notify_admins(f"☎️ <b>پیام پشتیبانی از مشتری:</b>\n\n{_buyer_line(chat_id, username)}\n\n💬 {text}")
+        await _send(chat_id, "✅ پیامت برای پشتیبانی ارسال شد؛ به‌زودی جواب می‌گیری.")
+        return
+
     if pending and pending.get("action") == "set_value" and text and _is_admin(chat_id):
         field = pending["field"]
         if field in ("price_per_gb", "price_per_day", "min_price"):
@@ -1450,6 +1494,18 @@ async def _handle_message(msg: dict):
                 await _send(chat_id, "❗️ یه عدد صحیح (تومان) بفرست:")
                 return
             SHOP[field] = n
+        elif field == "support_username":
+            SHOP[field] = text.strip().lstrip("@")[:64]
+        elif field == "spin_range":
+            parts = [p.strip() for p in re.split(r"[,\n]+", text) if p.strip()]
+            if len(parts) != 2:
+                await _send(chat_id, "❗️ دو عدد با کاما بفرست، مثال: <code>2000,20000</code>")
+                return
+            lo, hi = _parse_nonneg_int(parts[0]), _parse_nonneg_int(parts[1])
+            if lo is None or hi is None or lo <= 0 or hi < lo:
+                await _send(chat_id, "❗️ مقادیر نامعتبرن. مثال: <code>2000,20000</code>")
+                return
+            SHOP["spin_min"], SHOP["spin_max"] = lo, hi
         elif field == "wallet_topup_presets":
             parts = [p.strip() for p in re.split(r"[,\n]+", text) if p.strip()]
             amounts = []
@@ -1529,6 +1585,73 @@ async def _handle_callback(cb: dict):
             [{"text": _t(chat_id, "btn_back_home"), "callback_data": "home"}],
         ]}
         await _edit(chat_id, message_id, _t(chat_id, "help_text"), v2box_kb)
+        return
+
+    # ── گردونه‌ی شانس (یک‌بار در روز، جایزه‌ی نقدی به کیف پول) ──────────────
+    if data == "spin:go":
+        today = datetime.now().date().isoformat()
+        spins = SHOP.setdefault("spins", {})
+        if spins.get(str(chat_id)) == today:
+            await _answer_cb(cb_id, "🎲 امروز یه بار چرخوندی! فردا دوباره سر بزن 🌟", alert=True)
+            return
+        lo, hi = int(SHOP.get("spin_min", 2000)), int(SHOP.get("spin_max", 20000))
+        step = max(1, (hi - lo) // 1000)
+        prize = lo + random.randint(0, step) * 1000
+        spins[str(chat_id)] = today
+        wallets = SHOP.setdefault("wallets", {})
+        wallets[str(chat_id)] = int(wallets.get(str(chat_id), 0)) + prize
+        await _save_shop()
+        for frame in ["🎡 در حال چرخش گردونه", "🎡 در حال چرخش گردونه.", "🎡 در حال چرخش گردونه..", "🎡 در حال چرخش گردونه..."]:
+            await _edit(chat_id, message_id, frame)
+            await asyncio.sleep(0.35)
+        title, sub, kb = _home_view(chat_id)
+        await _edit(chat_id, message_id,
+                     f"🎉 تبریک! گردونه <b>{prize:,} تومان</b> جایزه داد و به کیف پولت اضافه شد!\n\n{title}\n\n{sub}", kb)
+        return
+
+    # ── تعرفه‌ی اشتراک‌ها (چند نمونه‌ی محاسبه‌شده از فرمول قیمت‌گذاری) ──────────
+    if data == "tariff:home":
+        pergb, perday, minp = SHOP.get("price_per_gb", 0), SHOP.get("price_per_day", 0), SHOP.get("min_price", 0)
+        lines = [
+            "💰 <b>تعرفه‌ی اشتراک‌های Matix</b>\n",
+            f"نرخ پایه: هر گیگ <b>{pergb:,}</b> تومان + هر روز <b>{perday:,}</b> تومان (حداقل سفارش {minp:,} تومان)\n",
+        ]
+        for gb, days in [(10, 30), (20, 30), (30, 30), (50, 60), (100, 90)]:
+            lines.append(f"📦 {gb} گیگ / {days} روز — <b>{_price_for(gb, days):,} تومان</b>")
+        lines.append("\nهر ترکیب دلخواهی از حجم و مدت رو هم می‌تونی از «خرید اشتراک» بسازی 👇")
+        kb = {"inline_keyboard": [
+            [_btn(_t(chat_id, "btn_buy"), "buy:start", style="success")],
+            [_btn(_t(chat_id, "btn_back_home"), "home")],
+        ]}
+        await _edit(chat_id, message_id, "\n".join(lines), kb)
+        return
+
+    # ── پشتیبانی ───────────────────────────────────────────────────────────
+    if data == "support:home":
+        uname = (SHOP.get("support_username") or "").lstrip("@")
+        rows = []
+        if uname:
+            rows.append([_btn("💬 گفتگو با پشتیبانی", url=f"https://t.me/{uname}", style="primary")])
+            txt = "☎️ <b>پشتیبانی Matix</b>\n\nبرای ارتباط مستقیم با پشتیبانی روی دکمه‌ی زیر بزن."
+        else:
+            txt = "☎️ <b>پشتیبانی Matix</b>\n\nپیامت رو همین‌جا بفرست تا مستقیم به تیم پشتیبانی ارسال بشه."
+            _pending[chat_id] = {"action": "support_msg"}
+        rows.append([_btn(_t(chat_id, "btn_back_home"), "home")])
+        await _edit(chat_id, message_id, txt, {"inline_keyboard": rows})
+        return
+
+    # ── درخواست نمایندگی ──────────────────────────────────────────────────
+    if data == "reseller:request":
+        await _notify_admins(f"🧑‍💼 <b>درخواست نمایندگی جدید!</b>\n\n{_buyer_line(chat_id, username)}\n\nبرای بررسی و هماهنگی باهاش در تماس باش.")
+        await _answer_cb(cb_id, "✅ درخواستت برای تیم ادمین ارسال شد؛ به‌زودی باهات تماس می‌گیریم.", alert=True)
+        return
+
+    # ── تعداد کاربران ربات (فقط ادمین) ─────────────────────────────────────
+    if data == "users:count":
+        if not _is_admin(chat_id):
+            await _answer_cb(cb_id, _t(chat_id, "no_access_cb"), alert=True)
+            return
+        await _answer_cb(cb_id, f"👥 تعداد کل کاربران ربات: {len(SHOP.get('known_users', []))}", alert=True)
         return
 
     # ── استعلام حجم کانفیگ (دکمه‌ی جدا) ─────────────────────────────────────
@@ -1915,26 +2038,6 @@ async def _handle_callback(cb: dict):
         await _edit(chat_id, message_id, _wizard_prompt("label", {}), _wizard_cancel_kb(chat_id))
         return
 
-    if data == "newcfg:gaming":
-        # ساخت سریع «یک‌کلیکی» کانفیگ گیمینگ، بدون عبور از ویزارد مرحله‌به‌مرحله.
-        # تنظیمات ترابرد/fingerprint/alpn/سرعت مستقیماً از GAMING_PRESET میان.
-        if not _is_admin(chat_id):
-            await _answer_cb(cb_id, _t(chat_id, "no_access_cb"), alert=True)
-            return
-        await _play_frames(chat_id, message_id, _GEN_FRAMES[_lg(chat_id)])
-        uid, link = await make_link(
-            label=GAMING_DEFAULT_LABEL,
-            note=GAMING_DEFAULT_NOTE,
-            protocol=GAMING_PRESET["protocol"],
-            fingerprint=GAMING_PRESET["fingerprint"],
-            alpn=GAMING_PRESET["alpn"],
-            port=GAMING_PRESET["port"],
-            speed_limit_bytes=GAMING_PRESET["speed_limit_bytes"],
-        )
-        link["source"] = "admin"
-        await _edit(chat_id, message_id, _t(chat_id, "created_msg", detail=_format_detail(uid, link)), _link_detail_kb(chat_id, uid, link["active"]))
-        return
-
     if data.startswith("toggle:"):
         if not _is_admin(chat_id):
             await _answer_cb(cb_id, _t(chat_id, "no_access_cb"), alert=True)
@@ -2097,6 +2200,8 @@ async def _handle_callback(cb: dict):
             ),
             "required_channel_url": "🔗 لینک عضویت در کانال اجباری رو بفرست (مثلاً https://t.me/mychannel):",
             "referral_bonus": "🤝 مبلغ پاداش رفرال (تومان) که بعد از اولین خرید هر زیرمجموعه به معرفش داده می‌شه رو بفرست:",
+            "support_username": "☎️ یوزرنیم تلگرام پشتیبانی رو بفرست (بدون @)، مثلاً <code>matix_support</code>:",
+            "spin_range": "🎲 بازه‌ی جایزه‌ی گردونه‌ی شانس (تومان) رو با کاما بفرست، مثلاً <code>2000,20000</code>:",
             "wallet_topup_presets": (
                 "💰 مبالغ پیشنهادی شارژ کیف پول (تومان) رو با کاما جدا کن و بفرست.\n"
                 "مثال: <code>50000,100000,200000,500000</code>"
