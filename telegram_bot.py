@@ -18,7 +18,13 @@ import time
 
 import aiofiles
 import httpx
-import qrcode
+
+try:
+    import qrcode
+    _QR_AVAILABLE = True
+except Exception:
+    qrcode = None
+    _QR_AVAILABLE = False
 
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -615,12 +621,19 @@ async def _edit(chat_id: int, message_id: int, text: str, kb: dict | None = None
     if res is None or not res.get("ok"):
         await _send(chat_id, text, kb)
 
-def _qr_png(data: str) -> bytes:
-    """یه تصویر QR-Code از یه رشته (مثلاً لینک ساب) می‌سازه و بایت‌های PNG رو برمی‌گردونه."""
-    img = qrcode.make(data, box_size=9, border=3)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+def _qr_png(data: str) -> bytes | None:
+    """یه تصویر QR-Code از یه رشته (مثلاً لینک ساب) می‌سازه و بایت‌های PNG رو برمی‌گردونه.
+    اگه کتابخونه‌ی qrcode روی سرور نصب نباشه، None برمی‌گردونه (بدون کرش کردن ربات)."""
+    if not _QR_AVAILABLE:
+        return None
+    try:
+        img = qrcode.make(data, box_size=9, border=3)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning(f"QR generation failed: {e}")
+        return None
 
 async def _send_photo_bytes(chat_id: int, photo_bytes: bytes, caption: str = "", kb: dict | None = None):
     """آپلود مستقیم یه عکس (بایت‌های PNG) به تلگرام، برای ارسال QR-Code کانفیگ."""
@@ -883,18 +896,25 @@ def _format_detail(uid: str, l: dict) -> str:
         f"UUID: <code>{uid}</code>"
     )
 
-def _format_detail_simple(l: dict) -> str:
-    """نمای ساده‌ی کانفیگ برای مشتری — بدون UUID/پورت/پروتکل، فقط اطلاعات ضروری."""
+def _format_detail_simple(l: dict, public_url: str = "") -> str:
+    """نمای ساده‌ی کانفیگ برای مشتری — بدون UUID/پورت/پروتکل، فقط اطلاعات ضروری + لینک قابل کپی."""
     status = "🟢 فعال" if is_link_allowed(l) else "🔴 غیرفعال/منقضی"
     limit = "نامحدود" if not l.get("limit_bytes") else fmt_bytes(l["limit_bytes"])
     exp = l.get("expires_at")
     exp_txt = exp.split("T")[0] if exp else "بدون انقضا"
-    return (
+    txt = (
         f"<b>{l.get('label','?')}</b>\n"
         f"وضعیت: {status}\n"
         f"مصرف: {fmt_bytes(l.get('used_bytes',0))} / {limit}\n"
         f"انقضا: {exp_txt}"
     )
+    if public_url:
+        txt += (
+            "\n\n📎 لینک اتصال (روی متن بزن تا کپی بشه):\n"
+            f"<code>{public_url}</code>\n\n"
+            "برای وصل شدن، این لینک رو توی اپلیکیشنت وارد کن یا کد QR بالا رو اسکن کن 🙏"
+        )
+    return txt
 
 def _link_detail_kb_customer(chat_id: int, uid: str, public_url: str):
     return {"inline_keyboard": [
@@ -904,17 +924,21 @@ def _link_detail_kb_customer(chat_id: int, uid: str, public_url: str):
     ]}
 
 async def _deliver_config(chat_id: int, message_id: int | None, uid: str, l: dict, prefix: str = ""):
-    """کانفیگ رو برای مشتری با QR-Code، متن ساده (بدون UUID/پورت) و دکمه‌های رنگی ارسال می‌کنه.
-    اگه message_id بدیم، پیام انیمیشن رو با یه خط تایید کوتاه می‌بنده و QR توی پیام جدید می‌ره."""
+    """کانفیگ رو برای مشتری با QR-Code + متن کانفیگ (لینک قابل کپی، بدون UUID/پورت) و دکمه‌های رنگی ارسال می‌کنه.
+    اگه message_id بدیم، پیام انیمیشن رو با یه خط تایید کوتاه می‌بنده و پیام نهایی توی پیام جدید می‌ره."""
     host = get_host()
     public_url = f"https://{host}/p/{uid}"
     if message_id:
         await _edit(chat_id, message_id, prefix or "✅ کانفیگت آماده شد!")
     elif prefix:
         await _send(chat_id, prefix)
-    caption = _format_detail_simple(l)
+    caption = _format_detail_simple(l, public_url)
+    kb = _link_detail_kb_customer(chat_id, uid, public_url)
     photo = _qr_png(public_url)
-    await _send_photo_bytes(chat_id, photo, caption, _link_detail_kb_customer(chat_id, uid, public_url))
+    if photo:
+        await _send_photo_bytes(chat_id, photo, caption, kb)
+    else:
+        await _send(chat_id, caption, kb)
 
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
