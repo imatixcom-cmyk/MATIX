@@ -9,6 +9,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 import asyncio
+import io
 import json
 import os
 import random
@@ -17,6 +18,7 @@ import time
 
 import aiofiles
 import httpx
+import qrcode
 
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -83,6 +85,7 @@ SHOP: dict = {
     "required_channel": "",       # آیدی عددی یا یوزرنیم کانالی که عضویت توش اجباریه (خالی = بدون محدودیت)
     "required_channel_url": "",   # لینک عضویت در همون کانال (برای دکمه)
     "support_username": "",       # یوزرنیم پشتیبانی برای دکمه‌ی «پشتیبانی» (بدون @)
+    "channels": [],                # [{"name": "کانال اصلی", "url": "https://t.me/..."}]
     "spins": {},                   # str(chat_id) -> تاریخ آخرین چرخش گردونه‌ی شانس (ISO date)
     "spin_min": 2000,              # حداقل جایزه‌ی گردونه‌ی شانس (تومان)
     "spin_max": 20000,             # حداکثر جایزه‌ی گردونه‌ی شانس (تومان)
@@ -296,33 +299,32 @@ T = {
         "fa": "به کنترل‌روم Matix خوش اومدی، کاپیتان 🧭\nاز میان گزینه‌های زیر انتخاب کن:",
         "en": "Welcome to the Matix control room, captain 🧭\nPick an option below:",
     },
-    "cust_home_title": {"fa": "💠 M A T I X", "en": "💠 M A T I X"},
+    "cust_home_title": {"fa": "<b>🕊️ به نام خدا</b>", "en": "<b>🕊️ In the name of God</b>"},
     "cust_home_sub": {
         "fa": (
-            "به نام خدا 🕊️\n\n"
             "به <b>Matix</b> خوش اومدی ✨\n"
-            "اینترنتِ آزاد، پرسرعت و پایدار — بدون قطعی، بدون دردسر 🚀\n\n"
+            "<b>اینترنتِ آزاد، پرسرعت و پایدار</b> — بدون قطعی، بدون دردسر 🚀\n\n"
             "🔹 هر حجم و هر مدتی که بخوای، با چند لمس بساز\n"
             "🔹 تحویل کاملاً خودکار و آنی بعد از تایید پرداخت\n"
             "🔹 پیش از خرید، یک کانفیگ تست رایگان بگیر\n\n"
-            "از منوی زیر شروع کن 👇"
+            "<b>از منوی زیر شروع کن 👇</b>"
         ),
         "en": (
             "Welcome to <b>Matix</b> ✨\n"
-            "Free, fast and stable internet — no drops, no hassle 🚀\n\n"
+            "<b>Free, fast and stable internet</b> — no drops, no hassle 🚀\n\n"
             "🔹 Any volume, any duration, built in a few taps\n"
             "🔹 Fully automatic, instant delivery after payment approval\n"
             "🔹 Grab a free trial before you buy\n\n"
-            "Start from the menu below 👇"
+            "<b>Start from the menu below 👇</b>"
         ),
     },
     "cust_home_sub_start": {
-        "fa": "به نام خدا 🕊️\n\nبه <b>Matix</b> خوش اومدی ✨",
-        "en": "In the name of God 🕊️\n\nWelcome back to <b>Matix</b> ✨",
+        "fa": "به <b>Matix</b> خوش اومدی ✨",
+        "en": "Welcome back to <b>Matix</b> ✨",
     },
     "cust_home_sub_return": {
-        "fa": "به صفحه‌ی اصلی برگشتی؛ از منو ادامه بده 👇",
-        "en": "Back to the home menu; pick an option below 👇",
+        "fa": "<b>به صفحه‌ی اصلی برگشتی</b>؛ از منو ادامه بده 👇",
+        "en": "<b>Back to the home menu</b>; pick an option below 👇",
     },
     "btn_buy": {"fa": "🛒 خرید کانفیگ", "en": "🛒 Buy a Config"},
     "btn_trial": {"fa": "🎁 دریافت تست رایگان", "en": "🎁 Get Free Trial"},
@@ -441,7 +443,7 @@ async def _play_entry_animation(chat_id: int, is_new: bool = False):
     if not message_id:
         return
     home_title, home_sub, kb = _home_view(chat_id, mode="first" if is_new else "start")
-    await _play_frames(chat_id, message_id, _ENTRY_FRAMES[lg][1:], f"{home_title}\n\n{home_sub}", kb)
+    await _play_frames(chat_id, message_id, _ENTRY_FRAMES[lg][1:], _join_ts(home_title, home_sub), kb)
 
 _client: httpx.AsyncClient | None = None
 _poll_task: asyncio.Task | None = None
@@ -613,6 +615,33 @@ async def _edit(chat_id: int, message_id: int, text: str, kb: dict | None = None
     if res is None or not res.get("ok"):
         await _send(chat_id, text, kb)
 
+def _qr_png(data: str) -> bytes:
+    """یه تصویر QR-Code از یه رشته (مثلاً لینک ساب) می‌سازه و بایت‌های PNG رو برمی‌گردونه."""
+    img = qrcode.make(data, box_size=9, border=3)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+async def _send_photo_bytes(chat_id: int, photo_bytes: bytes, caption: str = "", kb: dict | None = None):
+    """آپلود مستقیم یه عکس (بایت‌های PNG) به تلگرام، برای ارسال QR-Code کانفیگ."""
+    if _client is None:
+        return None
+    data = {"chat_id": str(chat_id), "caption": caption, "parse_mode": "HTML"}
+    if kb:
+        data["reply_markup"] = json.dumps(kb)
+    files = {"photo": ("config.png", photo_bytes, "image/png")}
+    try:
+        r = await _client.post(f"{API_BASE}/sendPhoto", data=data, files=files, timeout=40)
+        res = r.json()
+        if not res.get("ok"):
+            logger.warning(f"Telegram API sendPhoto failed: {res}")
+            await _send(chat_id, caption, kb)
+        return res
+    except Exception as e:
+        logger.warning(f"Telegram API sendPhoto error: {e}")
+        await _send(chat_id, caption, kb)
+        return None
+
 async def _answer_cb(cb_id: str, text: str = "", alert: bool = False):
     await _call("answerCallbackQuery", callback_query_id=cb_id, text=text, show_alert=alert)
 
@@ -627,6 +656,10 @@ async def _notify_admins(text: str, kb: dict | None = None):
         await _send(aid, text, kb)
 
 # ── Keyboards: Home (چیدمان کارتی/شبکه‌ای — دوستونه) ─────────────────────────
+def _join_ts(title: str, sub: str) -> str:
+    """تایتل و زیرمتن رو به هم می‌چسبونه؛ اگه تایتل خالی باشه (حالت مشتری، بدون سربرگ M A T I X)، فقط زیرمتن برمی‌گرده."""
+    return _join_ts(title, sub) if title else sub
+
 def _home_view(chat_id: int, mode: str = "home"):
     """mode: 'first' (اولین /start عمری کاربر، متن کامل)، 'start' (استارت‌های بعدی، کوتاه)،
     'home' (بازگشت از یه زیرمنو با دکمه‌ی بازگشت، کوتاه‌ترین حالت، بدون تکرار بسم‌الله)."""
@@ -658,7 +691,7 @@ def _home_view(chat_id: int, mode: str = "home"):
         wallet_label = _t(chat_id, "btn_wallet") + f" ({_wallet_balance(chat_id):,}ت)"
         rows = [
             [_btn(_t(chat_id, "btn_buy"), "buy:start", style="success"),
-             _btn("♻️ تمدید سرویس", "mine:0", style="success")],
+             _btn("📢 کانال‌های ما", "channels:home", style="success")],
             [_btn(_t(chat_id, "btn_trial"), "trial:claim", style="success"),
              _btn("🎲 گردونه شانس", "spin:go", style="success")],
             [_btn("🛍️ سرویس‌های من", "mine:0", style="danger"),
@@ -850,6 +883,39 @@ def _format_detail(uid: str, l: dict) -> str:
         f"UUID: <code>{uid}</code>"
     )
 
+def _format_detail_simple(l: dict) -> str:
+    """نمای ساده‌ی کانفیگ برای مشتری — بدون UUID/پورت/پروتکل، فقط اطلاعات ضروری."""
+    status = "🟢 فعال" if is_link_allowed(l) else "🔴 غیرفعال/منقضی"
+    limit = "نامحدود" if not l.get("limit_bytes") else fmt_bytes(l["limit_bytes"])
+    exp = l.get("expires_at")
+    exp_txt = exp.split("T")[0] if exp else "بدون انقضا"
+    return (
+        f"<b>{l.get('label','?')}</b>\n"
+        f"وضعیت: {status}\n"
+        f"مصرف: {fmt_bytes(l.get('used_bytes',0))} / {limit}\n"
+        f"انقضا: {exp_txt}"
+    )
+
+def _link_detail_kb_customer(chat_id: int, uid: str, public_url: str):
+    return {"inline_keyboard": [
+        [_btn("🔗 اتصال به کانفیگ", url=public_url, style="success")],
+        [_btn(_t(chat_id, "btn_renew"), f"renew:start:{uid}", style="primary")],
+        [_btn(_t(chat_id, "btn_back_list"), "mine:0", style="primary")],
+    ]}
+
+async def _deliver_config(chat_id: int, message_id: int | None, uid: str, l: dict, prefix: str = ""):
+    """کانفیگ رو برای مشتری با QR-Code، متن ساده (بدون UUID/پورت) و دکمه‌های رنگی ارسال می‌کنه.
+    اگه message_id بدیم، پیام انیمیشن رو با یه خط تایید کوتاه می‌بنده و QR توی پیام جدید می‌ره."""
+    host = get_host()
+    public_url = f"https://{host}/p/{uid}"
+    if message_id:
+        await _edit(chat_id, message_id, prefix or "✅ کانفیگت آماده شد!")
+    elif prefix:
+        await _send(chat_id, prefix)
+    caption = _format_detail_simple(l)
+    photo = _qr_png(public_url)
+    await _send_photo_bytes(chat_id, photo, caption, _link_detail_kb_customer(chat_id, uid, public_url))
+
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 def _extract_uid_from_text(text: str) -> str | None:
@@ -987,6 +1053,7 @@ def _settings_kb(chat_id: int):
          {"text": f"🔗 لینک عضویت", "callback_data": "set:required_channel_url"}],
         [{"text": f"🤝 پاداش رفرال: {SHOP.get('referral_bonus', 0):,}ت", "callback_data": "set:referral_bonus"}],
         [{"text": f"☎️ یوزرنیم پشتیبانی: {SHOP.get('support_username') or '—'}", "callback_data": "set:support_username"}],
+        [{"text": f"📢 کانال‌های ما ({len(SHOP.get('channels', []))} مورد)", "callback_data": "set:channels"}],
         [{"text": f"🎲 جایزه گردونه: {SHOP.get('spin_min', 0):,}–{SHOP.get('spin_max', 0):,}ت", "callback_data": "set:spin_range"}],
         [{"text": f"💰 مبالغ پیشنهادی شارژ کیف پول: {', '.join(f'{int(a):,}' for a in SHOP.get('wallet_topup_presets', []))}", "callback_data": "set:wallet_topup_presets"}],
         [{"text": _t(chat_id, "btn_admin_discounts"), "callback_data": "discounts:0"},
@@ -1138,8 +1205,6 @@ async def _handle_message(msg: dict):
         await _save_shop()
         who = f"@{username}" if username and " " not in username else (username or str(chat_id))
         log_activity("telegram", f"👤 کاربر جدید وارد ربات شد: {who} ({chat_id}) — مجموع کاربران: {len(known)}", "ok")
-        if not _is_admin(chat_id):
-            await _notify_admins(f"👤 <b>کاربر جدید وارد ربات شد!</b>\n\n{_buyer_line(chat_id, username)}\n\nمجموع کاربران ربات: <b>{len(known)}</b>")
 
     if text.startswith("/start"):
         _pending.pop(chat_id, None)
@@ -1183,7 +1248,7 @@ async def _handle_message(msg: dict):
         _pending.pop(chat_id, None)
         await _send(chat_id, _t(chat_id, "cancelled"))
         title, sub, kb = _home_view(chat_id)
-        await _send(chat_id, f"{title}\n\n{sub}", kb)
+        await _send(chat_id, _join_ts(title, sub), kb)
         return
 
     pending = _pending.get(chat_id)
@@ -1652,6 +1717,20 @@ async def _handle_message(msg: dict):
             SHOP[field] = n
         elif field == "support_username":
             SHOP[field] = text.strip().lstrip("@")[:64]
+        elif field == "channels":
+            chans = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or "|" not in line:
+                    continue
+                name, url = line.split("|", 1)
+                name, url = name.strip(), url.strip()
+                if name and url.startswith("http"):
+                    chans.append({"name": name[:40], "url": url})
+            if not chans:
+                await _send(chat_id, "❗️ فرمت درست نبود. هر خط باید «اسم | لینک» باشه:")
+                return
+            SHOP[field] = chans
         elif field == "spin_range":
             parts = [p.strip() for p in re.split(r"[,\n]+", text) if p.strip()]
             if len(parts) != 2:
@@ -1698,7 +1777,7 @@ async def _handle_message(msg: dict):
 
     # پیام ناشناخته → صفحه‌ی اصلی رو نشون بده
     title, sub, kb = _home_view(chat_id)
-    await _send(chat_id, f"{title}\n\n{sub}", kb)
+    await _send(chat_id, _join_ts(title, sub), kb)
 
 async def _handle_callback(cb: dict):
     chat_id = cb.get("message", {}).get("chat", {}).get("id")
@@ -1714,7 +1793,7 @@ async def _handle_callback(cb: dict):
     if data == "checkjoin":
         if await _passes_membership_gate(chat_id):
             title, sub, kb = _home_view(chat_id)
-            await _edit(chat_id, message_id, f"✅ عضویت تایید شد!\n\n{title}\n\n{sub}", kb)
+            await _edit(chat_id, message_id, f"✅ عضویت تایید شد!\n\n" + _join_ts(title, sub), kb)
         else:
             await _answer_cb(cb_id, "هنوز عضو کانال نشدی 🙁", alert=True)
         return
@@ -1726,13 +1805,13 @@ async def _handle_callback(cb: dict):
     if data == "lang:toggle":
         _toggle_lang(chat_id)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, _join_ts(title, sub), kb)
         return
 
     if data == "home":
         _pending.pop(chat_id, None)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, _join_ts(title, sub), kb)
         return
 
     if data == "help":
@@ -1762,7 +1841,7 @@ async def _handle_callback(cb: dict):
             await asyncio.sleep(0.35)
         title, sub, kb = _home_view(chat_id)
         await _edit(chat_id, message_id,
-                     f"🎉 تبریک! گردونه <b>{prize:,} تومان</b> جایزه داد و به کیف پولت اضافه شد!\n\n{title}\n\n{sub}", kb)
+                     f"🎉 تبریک! گردونه <b>{prize:,} تومان</b> جایزه داد و به کیف پولت اضافه شد!\n\n" + _join_ts(title, sub), kb)
         return
 
     # ── تعرفه‌ی اشتراک‌ها (چند نمونه‌ی محاسبه‌شده از فرمول قیمت‌گذاری) ──────────
@@ -1820,7 +1899,7 @@ async def _handle_callback(cb: dict):
     if data == "usage:cancel":
         _pending.pop(chat_id, None)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n" + _join_ts(title, sub), kb)
         return
 
     # ── مشاهده‌ی جزئیات یک کانفیگ (مشترک بین ادمین/مشتری، با محدودیت دسترسی) ──
@@ -1834,7 +1913,10 @@ async def _handle_callback(cb: dict):
         if not _is_admin(chat_id) and l.get("owner_chat_id") != chat_id:
             await _answer_cb(cb_id, _t(chat_id, "no_access_cb"), alert=True)
             return
-        await _edit(chat_id, message_id, _format_detail(uid, l), _link_detail_kb(chat_id, uid, l["active"]))
+        if _is_admin(chat_id):
+            await _edit(chat_id, message_id, _format_detail(uid, l), _link_detail_kb(chat_id, uid, l["active"]))
+        else:
+            await _deliver_config(chat_id, message_id, uid, l, "📦 جزئیات کانفیگت:")
         return
 
     if data.startswith("link:"):
@@ -1890,11 +1972,7 @@ async def _handle_callback(cb: dict):
         SHOP.setdefault("trial_used", []).append(chat_id)
         await _save_shop()
         await save_state()
-        await _edit(
-            chat_id, message_id,
-            "🎉 کانفیگ تست رایگانت آماده شد!\n\n" + _format_detail(uid, link),
-            _link_detail_kb(chat_id, uid, link["active"]),
-        )
+        await _deliver_config(chat_id, message_id, uid, link, "🎉 کانفیگ تست رایگانت آماده شد!")
         await _send_sticker(chat_id, "gift")
         return
 
@@ -1907,7 +1985,7 @@ async def _handle_callback(cb: dict):
     if data == "buy:cancel":
         _pending.pop(chat_id, None)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n" + _join_ts(title, sub), kb)
         return
 
     if data == "buy:discount":
@@ -1982,14 +2060,23 @@ async def _handle_callback(cb: dict):
         await save_state()
         await _save_shop()
         _pending.pop(chat_id, None)
-        await _edit(
-            chat_id, message_id,
-            "✅ مبلغ از کیف پولت کسر شد و کانفیگت آماده شد!\n\n" + _format_detail(uid, link),
-            _link_detail_kb(chat_id, uid, link["active"]),
-        )
+        await _deliver_config(chat_id, message_id, uid, link, "✅ مبلغ از کیف پولت کسر شد و کانفیگت آماده شد!")
         await _send_sticker(chat_id, "success")
         await _announce_purchase(order)
         await _reward_referrer_if_first_order(order)
+        return
+
+    # ── کانال‌های ما ─────────────────────────────────────────────────────────
+    if data == "channels:home":
+        chans = SHOP.get("channels", [])
+        if not chans:
+            txt = "📢 فعلاً کانالی ثبت نشده."
+            rows = []
+        else:
+            txt = "📢 <b>کانال‌های Matix</b>\n\nحتماً عضو بشو تا از اخبار و آفرها جا نمونی 👇"
+            rows = [[_btn(c["name"], url=c["url"], style="primary")] for c in chans]
+        rows.append([_btn(_t(chat_id, "btn_back_home"), "home", style="success")])
+        await _edit(chat_id, message_id, txt, {"inline_keyboard": rows})
         return
 
     # ── کیف پول ──────────────────────────────────────────────────────────────
@@ -1997,9 +2084,9 @@ async def _handle_callback(cb: dict):
         balance = _wallet_balance(chat_id)
         txt = f"💰 <b>کیف پول Matix</b>\n\nموجودی فعلی: <b>{balance:,} تومان</b>"
         kb = {"inline_keyboard": [
-            [{"text": "➕ شارژ کیف پول", "callback_data": "wallet:topup:start"}],
-            [{"text": "🎁 کد هدیه دارم", "callback_data": "gift:redeem:start"}],
-            [{"text": _t(chat_id, "btn_back_home"), "callback_data": "home"}],
+            [_btn("➕ شارژ کیف پول", "wallet:topup:start", style="success")],
+            [_btn("🎁 کد هدیه دارم", "gift:redeem:start", style="success")],
+            [_btn(_t(chat_id, "btn_back_home"), "home", style="primary")],
         ]}
         await _edit(chat_id, message_id, txt, kb)
         return
@@ -2045,7 +2132,7 @@ async def _handle_callback(cb: dict):
     if data == "wallet:cancel":
         _pending.pop(chat_id, None)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n" + _join_ts(title, sub), kb)
         return
 
     if data.startswith("wt:appr:") or data.startswith("wt:rej:"):
@@ -2110,7 +2197,7 @@ async def _handle_callback(cb: dict):
     if data == "renew:cancel":
         _pending.pop(chat_id, None)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n" + _join_ts(title, sub), kb)
         return
 
     if data == "renew:pay:wallet" or data == "renew:pay:card":
@@ -2128,11 +2215,7 @@ async def _handle_callback(cb: dict):
             await save_state()
             await _save_shop()
             _pending.pop(chat_id, None)
-            await _edit(
-                chat_id, message_id,
-                "✅ مبلغ از کیف پولت کسر شد و کانفیگت تمدید شد!\n\n" + _format_detail(uid, link),
-                _link_detail_kb(chat_id, uid, link["active"]),
-            )
+            await _deliver_config(chat_id, message_id, uid, link, "✅ مبلغ از کیف پولت کسر شد و کانفیگت تمدید شد!")
             await _send_sticker(chat_id, "success")
             return
         pending["step"] = "receipt"
@@ -2171,7 +2254,7 @@ async def _handle_callback(cb: dict):
     if data == "bcast:cancel":
         _pending.pop(chat_id, None)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, f"{_t(chat_id,'gen_cancelled')}\n\n" + _join_ts(title, sub), kb)
         return
 
     # ── بخش ادمین: لیست کامل کانفیگ‌ها ──────────────────────────────────────
@@ -2279,11 +2362,7 @@ async def _handle_callback(cb: dict):
                 order["uid"] = uid
                 await save_state()
                 await _save_shop()
-                await _send(
-                    order["chat_id"],
-                    "✅ تمدید تایید شد و کانفیگت بروزرسانی شد!\n\n" + _format_detail(uid, link),
-                    _link_detail_kb(order["chat_id"], uid, link["active"]),
-                )
+                await _deliver_config(order["chat_id"], None, uid, link, "✅ تمدید تایید شد و کانفیگت بروزرسانی شد!")
                 await _send_sticker(order["chat_id"], "success")
                 await _edit(chat_id, message_id, "✅ تمدید تایید و اعمال شد.\n\n" + _order_summary(order))
                 return
@@ -2308,11 +2387,7 @@ async def _handle_callback(cb: dict):
             mid = (r or {}).get("result", {}).get("message_id")
             if mid:
                 await _play_frames(order["chat_id"], mid, _GEN_FRAMES[_lg(order["chat_id"])])
-            await _send(
-                order["chat_id"],
-                "✅ کانفیگت آماده شد!\n\n" + _format_detail(uid, link),
-                _link_detail_kb(order["chat_id"], uid, link["active"]),
-            )
+            await _deliver_config(order["chat_id"], None, uid, link, "✅ کانفیگت آماده شد!")
             await _send_sticker(order["chat_id"], "success")
             await _announce_purchase(order)
             await _reward_referrer_if_first_order(order)
@@ -2358,6 +2433,7 @@ async def _handle_callback(cb: dict):
             "required_channel_url": "🔗 لینک عضویت در کانال اجباری رو بفرست (مثلاً https://t.me/mychannel):",
             "referral_bonus": "🤝 مبلغ پاداش رفرال (تومان) که بعد از اولین خرید هر زیرمجموعه به معرفش داده می‌شه رو بفرست:",
             "support_username": "☎️ یوزرنیم تلگرام پشتیبانی رو بفرست (بدون @)، مثلاً <code>matix_support</code>:",
+            "channels": "📢 لیست کانال‌ها رو بفرست، هر خط یک کانال به فرم «اسم | لینک»، مثلاً:\n<code>کانال اصلی | https://t.me/matix_channel\nپشتیبانی | https://t.me/matix_support</code>",
             "spin_range": "🎲 بازه‌ی جایزه‌ی گردونه‌ی شانس (تومان) رو با کاما بفرست، مثلاً <code>2000,20000</code>:",
             "wallet_topup_presets": (
                 "💰 مبالغ پیشنهادی شارژ کیف پول (تومان) رو با کاما جدا کن و بفرست.\n"
@@ -2601,7 +2677,7 @@ async def _handle_callback(cb: dict):
     if data == "w:cancel":
         _pending.pop(chat_id, None)
         title, sub, kb = _home_view(chat_id)
-        await _edit(chat_id, message_id, f"{_t(chat_id, 'gen_cancelled')}\n\n{title}\n\n{sub}", kb)
+        await _edit(chat_id, message_id, f"{_t(chat_id, 'gen_cancelled')}\n\n" + _join_ts(title, sub), kb)
         return
 
     if data.startswith("w:"):
