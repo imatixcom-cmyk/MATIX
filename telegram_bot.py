@@ -605,14 +605,14 @@ def _home_view(chat_id: int):
         kb = {"inline_keyboard": [
             [_btn(_t(chat_id, "btn_admin_manage"), "list:0", style="primary"),
              _btn(_t(chat_id, "btn_admin_new"), "newcfg", style="success")],
-            [_btn(orders_label, "orders:0", style="destructive" if n_pending else "primary"),
+            [_btn(orders_label, "orders:0", style="danger" if n_pending else "primary"),
              _btn(_t(chat_id, "btn_admin_settings"), "settings", style="primary")],
-            [_btn(_t(chat_id, "btn_check_usage"), "usage:start"),
+            [_btn(_t(chat_id, "btn_check_usage"), "usage:start", style="primary"),
              _btn(_t(chat_id, "btn_admin_stats"), "stats:home", style="primary")],
-            [_btn(f"👥 کاربران ربات ({len(SHOP.get('known_users', []))})", "users:count")],
+            [_btn(f"👥 کاربران ربات ({len(SHOP.get('known_users', []))})", "users:count", style="primary")],
             [_btn(_t(chat_id, "btn_admin_broadcast"), "bcast:start", style="primary")],
-            [_btn(_t(chat_id, "btn_refresh"), "home"),
-             _btn(_t(chat_id, "btn_lang"), "lang:toggle")],
+            [_btn(_t(chat_id, "btn_refresh"), "home", style="success"),
+             _btn(_t(chat_id, "btn_lang"), "lang:toggle", style="primary")],
         ]}
     else:
         title = bismillah + _t(chat_id, "cust_home_title")
@@ -623,16 +623,16 @@ def _home_view(chat_id: int):
              _btn("♻️ تمدید سرویس", "mine:0", style="success")],
             [_btn(_t(chat_id, "btn_trial"), "trial:claim", style="success"),
              _btn("🎲 گردونه شانس", "spin:go", style="success")],
-            [_btn("🛍️ سرویس‌های من", "mine:0", style="destructive"),
+            [_btn("🛍️ سرویس‌های من", "mine:0", style="danger"),
              _btn(wallet_label, "wallet:home", style="success")],
-            [_btn(_t(chat_id, "btn_referral") or "👥 زیر مجموعه‌گیری", "ref:home"),
+            [_btn(_t(chat_id, "btn_referral") or "👥 زیر مجموعه‌گیری", "ref:home", style="primary"),
              _btn("💰 تعرفه اشتراک‌ها", "tariff:home", style="primary")],
             [_btn("☎️ پشتیبانی", "support:home", style="primary"),
              _btn(_t(chat_id, "btn_help") or "📚 آموزش", "help", style="primary")],
             [_btn("🧑‍💼 درخواست نمایندگی", "reseller:request", style="success")],
-            [_btn(_t(chat_id, "btn_check_usage") or "🔍 استعلام حجم با لینک", "usage:start")],
+            [_btn(_t(chat_id, "btn_check_usage") or "🔍 استعلام حجم با لینک", "usage:start", style="primary")],
         ]
-        rows.append([_btn(_t(chat_id, "btn_lang"), "lang:toggle")])
+        rows.append([_btn(_t(chat_id, "btn_lang"), "lang:toggle", style="primary")])
         kb = {"inline_keyboard": rows}
     return title, sub, kb
 
