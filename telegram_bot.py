@@ -892,8 +892,8 @@ def _format_detail(uid: str, l: dict) -> str:
         f"UUID: <code>{uid}</code>"
     )
 
-def _format_detail_simple(l: dict, public_url: str = "") -> str:
-    """نمای ساده‌ی کانفیگ برای مشتری — بدون UUID/پورت/پروتکل، فقط اطلاعات ضروری + لینک قابل کپی."""
+def _format_detail_simple(l: dict, vless: str = "") -> str:
+    """نمای ساده‌ی کانفیگ برای مشتری — بدون UUID/پورت/پروتکل، فقط اطلاعات ضروری + متن vless قابل کپی."""
     status = "🟢 فعال" if is_link_allowed(l) else "🔴 غیرفعال/منقضی"
     limit = "نامحدود" if not l.get("limit_bytes") else fmt_bytes(l["limit_bytes"])
     exp = l.get("expires_at")
@@ -904,37 +904,35 @@ def _format_detail_simple(l: dict, public_url: str = "") -> str:
         f"مصرف: {fmt_bytes(l.get('used_bytes',0))} / {limit}\n"
         f"انقضا: {exp_txt}"
     )
-    if public_url:
+    if vless:
         txt += (
-            "\n\n📎 لینک اتصال (روی متن بزن تا کپی بشه):\n"
-            f"<code>{public_url}</code>\n\n"
-            "برای وصل شدن، این لینک رو توی اپلیکیشنت وارد کن یا کد QR بالا رو اسکن کن 🙏"
+            "\n\n📎 متن اتصال (روی متن بزن تا کپی بشه، بعد توی v2Box وارد کن):\n"
+            f"<code>{vless}</code>\n\n"
+            "یا کد QR بالا رو مستقیم با v2Box اسکن کن 📱🙏"
         )
     return txt
 
-def _link_detail_kb_customer(chat_id: int, uid: str, public_url: str):
+def _link_detail_kb_customer(chat_id: int, uid: str):
     return {"inline_keyboard": [
-        [_btn("🔗 اتصال به کانفیگ", url=public_url, style="success")],
+        [_btn("📲 دانلود v2Box", url=V2BOX_URL, style="success")],
         [_btn(_t(chat_id, "btn_renew"), f"renew:start:{uid}", style="primary")],
         [_btn(_t(chat_id, "btn_back_list"), "mine:0", style="primary")],
     ]}
 
 async def _deliver_config(chat_id: int, message_id: int | None, uid: str, l: dict, prefix: str = ""):
-    """کانفیگ رو برای مشتری با QR-Code + متن کانفیگ (لینک قابل کپی، بدون UUID/پورت) و دکمه‌های رنگی ارسال می‌کنه.
-    اگه message_id بدیم، پیام انیمیشن رو با یه خط تایید کوتاه می‌بنده و پیام نهایی توی پیام جدید می‌ره."""
+    """کانفیگ رو برای مشتری، هرچه سریع‌تر، با QR-Code از خودِ vless (نه لینک ساب) + متن vless
+    قابل کپی و دکمه‌های رنگی ارسال می‌کنه. اگه یه پیام انیمیشن در جریان باشه (message_id)،
+    همزمان با ارسال QR بسته می‌شه تا معطلی نداشته باشه."""
     host = get_host()
-    public_url = f"https://{host}/p/{uid}"
+    vless = vless_link_for_link(l, uid, host)
+    caption = (f"{prefix}\n\n" if prefix else "") + _format_detail_simple(l, vless)
+    kb = _link_detail_kb_customer(chat_id, uid)
+    photo = _qr_png(vless)
+    send_coro = _send_photo_bytes(chat_id, photo, caption, kb) if photo else _send(chat_id, caption, kb)
     if message_id:
-        await _edit(chat_id, message_id, prefix or "✅ کانفیگت آماده شد!")
-    elif prefix:
-        await _send(chat_id, prefix)
-    caption = _format_detail_simple(l, public_url)
-    kb = _link_detail_kb_customer(chat_id, uid, public_url)
-    photo = _qr_png(public_url)
-    if photo:
-        await _send_photo_bytes(chat_id, photo, caption, kb)
+        await asyncio.gather(send_coro, _edit(chat_id, message_id, prefix or "✅ کانفیگت آماده شد!"))
     else:
-        await _send(chat_id, caption, kb)
+        await send_coro
 
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
