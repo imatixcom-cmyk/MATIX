@@ -443,13 +443,9 @@ async def _play_frames(chat_id: int, message_id: int, frames: list[str], final_t
         await _edit(chat_id, message_id, final_text, final_kb)
 
 async def _play_entry_animation(chat_id: int, is_new: bool = False):
-    lg = _lg(chat_id)
-    r = await _send(chat_id, _ENTRY_FRAMES[lg][0])
-    message_id = (r or {}).get("result", {}).get("message_id")
-    if not message_id:
-        return
+    """کاربر /start می‌زنه و بلافاصله منوی اصلی با همه‌ی دکمه‌ها میاد، بدون انیمیشن/تاخیر."""
     home_title, home_sub, kb = _home_view(chat_id, mode="first" if is_new else "start")
-    await _play_frames(chat_id, message_id, _ENTRY_FRAMES[lg][1:], _join_ts(home_title, home_sub), kb)
+    await _send(chat_id, _join_ts(home_title, home_sub), kb)
 
 _client: httpx.AsyncClient | None = None
 _poll_task: asyncio.Task | None = None
@@ -670,8 +666,8 @@ async def _notify_admins(text: str, kb: dict | None = None):
 
 # ── Keyboards: Home (چیدمان کارتی/شبکه‌ای — دوستونه) ─────────────────────────
 def _join_ts(title: str, sub: str) -> str:
-    """تایتل و زیرمتن رو به هم می‌چسبونه؛ اگه تایتل خالی باشه (حالت مشتری، بدون سربرگ M A T I X)، فقط زیرمتن برمی‌گرده."""
-    return _join_ts(title, sub) if title else sub
+    """تایتل و زیرمتن رو به هم می‌چسبونه؛ اگه تایتل خالی باشه، فقط زیرمتن برمی‌گرده."""
+    return f"{title}\n\n{sub}" if title else sub
 
 def _home_view(chat_id: int, mode: str = "home"):
     """mode: 'first' (اولین /start عمری کاربر، متن کامل)، 'start' (استارت‌های بعدی، کوتاه)،
