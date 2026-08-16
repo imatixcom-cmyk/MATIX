@@ -117,6 +117,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -860,6 +861,15 @@ a{color:inherit;text-decoration:none}
     <button class="modal-close" onclick="closeModal('modal-link-chart')"><i class="ti ti-x"></i></button>
     <div class="modal-title" id="lc-title"><i class="ti ti-chart-line"></i> نمودار مصرف</div>
     <div style="height:280px;margin-top:10px"><canvas id="lc-canvas"></canvas></div>
+  </div>
+</div>
+<div class="modal-bg" id="modal-qr">
+  <div class="modal" style="max-width:340px;text-align:center">
+    <button class="modal-close" onclick="closeModal('modal-qr')"><i class="ti ti-x"></i></button>
+    <div class="modal-title" id="qr-modal-title"><i class="ti ti-qrcode"></i> QR کانفیگ</div>
+    <div id="qr-modal-canvas" style="display:flex;justify-content:center;margin:16px 0;padding:14px;background:#fff;border-radius:16px"></div>
+    <div style="font-size:11px;color:var(--t3);margin-bottom:10px">این کد رو با اپلیکیشن v2Box اسکن کن</div>
+    <button class="btn btn-o" style="width:100%" onclick="navigator.clipboard.writeText(window._qrCurrentLink||'').then(()=>toast('لینک کپی شد','ok'))"><i class="ti ti-copy"></i> کپی متن کانفیگ</button>
   </div>
 </div>
 <div class="mob-top">
@@ -1738,7 +1748,7 @@ function renderLinksGrid(){
         <button class="tog${allowed?' on':''}" onclick="toggleActive('${l.uuid}',${!l.active})" title="فعال/غیرفعال"></button>
         <button class="btn btn-sm btn-blue btn-icon" onclick="navigator.clipboard.writeText('${esc(l.vless_link)}').then(()=>toast('لینک کپی شد','ok'))" title="کپی لینک"><i class="ti ti-copy"></i></button>
         <button class="btn btn-sm btn-blue btn-icon" onclick="window.open('${esc(l.sub_url)}','_blank')" title="باز کردن داشبورد ساب"><i class="ti ti-rss"></i></button>
-        <button class="btn btn-sm btn-blue btn-icon" onclick="showQR('${esc(l.vless_link)}')" title="QR"><i class="ti ti-qrcode"></i></button>
+        <button class="btn btn-sm btn-blue btn-icon" onclick="showQR('${esc(l.vless_link)}','${esc(l.label)}')" title="QR"><i class="ti ti-qrcode"></i></button>
         <button class="btn btn-sm btn-blue btn-icon" onclick="openLinkChart('${l.uuid}','${esc(l.label)}')" title="نمودار مصرف ۳۰ روز اخیر"><i class="ti ti-chart-line"></i></button>
         <button class="btn btn-sm btn-amber btn-icon" onclick="openEditLink('${l.uuid}')" title="ویرایش"><i class="ti ti-edit"></i></button>
         <button class="btn btn-sm btn-green btn-icon" onclick="resetUsage('${l.uuid}')" title="ریست مصرف"><i class="ti ti-rotate"></i></button>
@@ -1873,7 +1883,14 @@ async function deleteLink(uuid){
   if(!confirm('حذف این کانفیگ؟'))return;
   try{const r=await authF('/api/links/'+uuid,{method:'DELETE'});if(!r.ok)throw new Error();toast('حذف شد ✓','ok');loadLinks();}catch(e){toast('خطا','err')}
 }
-function showQR(link){window.open('https://api.qrserver.com/v1/create-qr-code/?size=300x300&data='+encodeURIComponent(link),'_blank')}
+function showQR(link,label){
+  window._qrCurrentLink=link;
+  document.getElementById('qr-modal-title').innerHTML='<i class="ti ti-qrcode"></i> '+(label?esc(label):'QR کانفیگ');
+  const box=document.getElementById('qr-modal-canvas');
+  box.innerHTML='';
+  new QRCode(box,{text:link,width:240,height:240,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});
+  openModal('modal-qr');
+}
 function parseBytesFmt(s){
   if(!s)return 0;
   const m=String(s).match(/([\d.]+)\s*([A-Za-z]+)/);
@@ -2011,7 +2028,7 @@ function renderCfgDashDetail(uuid){
       <div class="card-title"><i class="ti ti-key"></i> ${esc(l.label)} ${l.active&&!l.expired?'<span class="badge bg-green" style="margin-right:6px">فعال</span>':'<span class="badge bg-red" style="margin-right:6px">'+(l.expired?'منقضی':'غیرفعال')+'</span>'}
         <span class="ml-auto" style="display:flex;gap:6px">
           <button class="btn btn-sm btn-blue btn-icon" onclick="navigator.clipboard.writeText('${esc(l.vless_link)}').then(()=>toast('لینک کپی شد','ok'))" title="کپی لینک"><i class="ti ti-copy"></i></button>
-          <button class="btn btn-sm btn-blue btn-icon" onclick="showQR('${esc(l.vless_link)}')" title="QR"><i class="ti ti-qrcode"></i></button>
+          <button class="btn btn-sm btn-blue btn-icon" onclick="showQR('${esc(l.vless_link)}','${esc(l.label)}')" title="QR"><i class="ti ti-qrcode"></i></button>
           <button class="btn btn-sm btn-blue btn-icon" onclick="openLinkChart('${l.uuid}','${esc(l.label)}')" title="نمودار مصرف"><i class="ti ti-chart-line"></i></button>
         </span>
       </div>
