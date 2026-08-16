@@ -329,12 +329,28 @@ T = {
         ),
     },
     "cust_home_sub_start": {
-        "fa": "به <b>Matix</b> خوش اومدی ✨",
-        "en": "Welcome back to <b>Matix</b> ✨",
+        "fa": (
+            "به <b>Matix</b> خوش اومدی ✨\n"
+            "اینترنتِ آزاد، پرسرعت و پایدار، همیشه در دسترسته 🚀\n"
+            "از منوی رنگی زیر هر کاری که لازم داری رو با یه لمس انجام بده 👇"
+        ),
+        "en": (
+            "Welcome back to <b>Matix</b> ✨\n"
+            "Free, fast and stable internet, always ready for you 🚀\n"
+            "Pick anything you need from the colorful menu below 👇"
+        ),
     },
     "cust_home_sub_return": {
-        "fa": "<b>به صفحه‌ی اصلی برگشتی</b>؛ از منو ادامه بده 👇",
-        "en": "<b>Back to the home menu</b>; pick an option below 👇",
+        "fa": (
+            "<b>به صفحه‌ی اصلی برگشتی</b> 🏠\n"
+            "هر کانفیگ، خرید، تمدید یا شارژ کیف پولی که لازم داری از همینجا در دسترسه؛\n"
+            "از منوی زیر ادامه بده 👇"
+        ),
+        "en": (
+            "<b>Back to the home menu</b> 🏠\n"
+            "Every config, purchase, renewal, or wallet action is right here;\n"
+            "continue from the menu below 👇"
+        ),
     },
     "btn_buy": {"fa": "🛒 خرید کانفیگ", "en": "🛒 Buy a Config"},
     "btn_trial": {"fa": "🎁 دریافت تست رایگان", "en": "🎁 Get Free Trial"},
